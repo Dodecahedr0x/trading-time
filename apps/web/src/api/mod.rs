@@ -34,6 +34,22 @@ pub fn funding_path(owner: &str, limit: u32) -> String {
     format!("/v1/traders/{owner}/funding?limit={limit}")
 }
 
+pub const ANALYTICS_SUMMARY_PATH: &str = "/v1/analytics/summary";
+pub const ANALYTICS_MAKERS_PATH: &str = "/v1/analytics/makers";
+
+pub fn analytics_volume_path(interval: &str, limit: u32) -> String {
+    format!("/v1/analytics/volume?interval={interval}&limit={limit}")
+}
+pub fn leaderboard_path(sort: &str, limit: u32, makers: bool) -> String {
+    format!("/v1/analytics/leaderboard?sort={sort}&limit={limit}&makers={makers}")
+}
+pub fn analytics_trades_path(limit: u32) -> String {
+    format!("/v1/analytics/trades?limit={limit}")
+}
+pub fn liquidations_path(limit: u32) -> String {
+    format!("/v1/analytics/liquidations?limit={limit}")
+}
+
 pub fn parse_json<T: DeserializeOwned>(text: &str) -> Result<T, String> {
     serde_json::from_str(text).map_err(|e| format!("bad JSON: {e}"))
 }
@@ -93,6 +109,25 @@ pub async fn orders(api: &str, owner: &str) -> Result<Vec<OrderJson>, String> {
 }
 pub async fn funding(api: &str, owner: &str, limit: u32) -> Result<Vec<FundingJson>, String> {
     get(api, &funding_path(owner, limit)).await
+}
+
+pub async fn analytics_summary(api: &str) -> Result<AnalyticsSummaryJson, String> {
+    get(api, ANALYTICS_SUMMARY_PATH).await
+}
+pub async fn analytics_volume(api: &str, interval: &str, limit: u32) -> Result<Vec<VolumeBucketJson>, String> {
+    get(api, &analytics_volume_path(interval, limit)).await
+}
+pub async fn leaderboard(api: &str, sort: &str, limit: u32, makers: bool) -> Result<Vec<LeaderboardRowJson>, String> {
+    get(api, &leaderboard_path(sort, limit, makers)).await
+}
+pub async fn analytics_makers(api: &str) -> Result<Vec<MakerRowJson>, String> {
+    get(api, ANALYTICS_MAKERS_PATH).await
+}
+pub async fn analytics_trades(api: &str, limit: u32) -> Result<Vec<AnalyticsTradeJson>, String> {
+    get(api, &analytics_trades_path(limit)).await
+}
+pub async fn liquidations(api: &str, limit: u32) -> Result<Vec<LiquidationJson>, String> {
+    get(api, &liquidations_path(limit)).await
 }
 
 pub fn subscribe_msg(channels: &[String]) -> String {

@@ -12,6 +12,7 @@ use solana_pubkey::Pubkey;
 use tokio::sync::broadcast;
 use tradingtime_math::Side;
 
+use crate::analytics::{self, Sort};
 use crate::store::Store;
 use crate::views::{self, ViewError, ViewResult};
 
@@ -97,6 +98,12 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/positions", get(positions))
         .route("/v1/liquidatable", get(liquidatable))
         .route("/v1/orders/open", get(open_orders))
+        .route("/v1/analytics/summary", get(an_summary))
+        .route("/v1/analytics/volume", get(an_volume))
+        .route("/v1/analytics/leaderboard", get(an_leaderboard))
+        .route("/v1/analytics/makers", get(an_makers))
+        .route("/v1/analytics/trades", get(an_trades))
+        .route("/v1/analytics/liquidations", get(an_liquidations))
         .route("/v1/ws", get(ws))
         .layer(tower_http::cors::CorsLayer::permissive())
         .with_state(state)
@@ -173,6 +180,47 @@ async fn liquidatable(State(s): State<AppState>) -> ApiResult {
 
 async fn open_orders(State(s): State<AppState>) -> ApiResult {
     respond(s.with_store(views::open_orders_view))
+}
+
+async fn an_summary(State(s): State<AppState>) -> ApiResult {
+    respond(s.with_store(analytics::summary_view))
+}
+
+async fn an_volume(State(s): State<AppState>, Query(q): Query<HashMap<String, String>>) -> ApiResult {
+    let iv = q.get("interval").map(String::as_str).unwrap_or("1h");
+    if analytics::interval_secs(iv).is_none() {
+        return Err(bad(format!("bad interval {iv}")));
+    }
+    let n = limit(&q, 48, 500)?;
+    respond(s.with_store(|st| analytics::volume_view(st, iv, n)))
+}
+
+async fn an_leaderboard(State(s): State<AppState>, Query(q): Query<HashMap<String, String>>) -> ApiResult {
+    let sort = match q.get("sort") {
+        None => Sort::Pnl,
+        Some(x) => Sort::parse(x).ok_or_else(|| bad(format!("bad sort {x}")))?,
+    };
+    let makers = match q.get("makers").map(String::as_str) {
+        None | Some("false") => false,
+        Some("true") => true,
+        Some(x) => return Err(bad(format!("bad makers {x}"))),
+    };
+    let n = limit(&q, 50, 500)?;
+    respond(s.with_store(|st| analytics::leaderboard_view(st, sort, makers, n)))
+}
+
+async fn an_makers(State(s): State<AppState>) -> ApiResult {
+    respond(s.with_store(analytics::makers_view))
+}
+
+async fn an_trades(State(s): State<AppState>, Query(q): Query<HashMap<String, String>>) -> ApiResult {
+    let n = limit(&q, 50, 500)?;
+    respond(s.with_store(|st| analytics::trades_view(st, n)))
+}
+
+async fn an_liquidations(State(s): State<AppState>, Query(q): Query<HashMap<String, String>>) -> ApiResult {
+    let n = limit(&q, 50, 500)?;
+    respond(s.with_store(|st| analytics::liquidations_view(st, n)))
 }
 
 async fn ws(State(s): State<AppState>, up: WebSocketUpgrade) -> Response {

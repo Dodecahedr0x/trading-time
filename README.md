@@ -32,3 +32,30 @@ CSV input: `ts,open,high,low,close[,...]` (headers skipped, ms timestamps detect
 `data/sample.csv` is a synthetic 7-day regime-switching path (`cli --export`).
 
 Design rationale and findings: [docs/design.md](docs/design.md).
+
+## On-chain system
+
+```
+programs/tradingtime   Pinocchio program (log-time perp, propAMM curves, limit orders, liquidation + ADL)
+crates/{math,interface,client}   shared fixed-point math, account/ix layouts, Rust client
+services/indexer       Carbon + SQLite indexer, REST + WebSocket on :8787 (incl. /v1/analytics/*)
+services/keeper        cranks index/funding/mark, liquidates, fills limit orders
+services/maker         propAMM market maker (Binance/Coinbase feeds, or replay)
+services/bots          simulated traders + Pyth price driver for local stacks
+apps/web               Dioxus web app (trade + analytics), wallet via Wallet Standard
+tests/integration, e2e Surfpool integration tests and Playwright browser tests
+```
+
+Tasks run through [`just`](https://github.com/casey/just) (`just` lists them). Needs Surfpool, the Solana CLI, `dx`, Node + pnpm.
+
+```bash
+just test            # workspace unit + LiteSVM tests
+just test-all        # + clippy, wasm, fresh stack, integration + browser tests
+just up              # quiet local stack (Surfpool fork, program, indexer, keeper, 2 makers)
+just sim             # busy stack: 4 makers, 12 bot traders, moving Pyth price; serves the app
+just sim 30 800      # 30 bots ticking every 800 ms
+just logs bots       # follow a service log; `just status`, `just stats`, `just down`
+```
+
+`just sim` prints the app URL; the analytics view is at `#/analytics` (volume, open interest,
+trader leaderboard and PnL, makers, live trades, liquidations).

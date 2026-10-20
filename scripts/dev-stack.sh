@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # TradingTime local stack on a Surfpool mainnet fork.
-#   scripts/dev-stack.sh up    start surfpool, deploy, bootstrap, indexer, keeper, two makers
-#   scripts/dev-stack.sh down  stop everything started by `up`
+#   scripts/dev-stack.sh up      start surfpool, deploy, bootstrap, indexer, keeper, two makers
+#   scripts/dev-stack.sh sim     `up` plus two more makers, bot traders and a moving Pyth price
+#   scripts/dev-stack.sh status  list running services
+#   scripts/dev-stack.sh down    stop everything started by `up` / `sim`
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIR="$ROOT/target/dev-stack"
@@ -37,8 +39,8 @@ up() {
   echo "building binaries"
   cargo build-sbf --manifest-path "$ROOT/programs/tradingtime/Cargo.toml" --sbf-out-dir "$ROOT/target/deploy" >"$DIR/build-sbf.log" 2>&1
   cp "$ROOT/programs/tradingtime/program-keypair.json" "$ROOT/target/deploy/tradingtime_program-keypair.json"
-  cargo build --release -p tradingtime-indexer -p tradingtime-keeper -p tradingtime-maker -p tradingtime-tests --bins >"$DIR/build.log" 2>&1
-  for b in tradingtime-indexer tradingtime-keeper tradingtime-maker bootstrap; do cp "$CARGO_TARGET_DIR/release/$b" "$BIN/"; done
+  cargo build --release -p tradingtime-indexer -p tradingtime-keeper -p tradingtime-maker -p tradingtime-bots -p tradingtime-tests --bins >"$DIR/build.log" 2>&1
+  for b in tradingtime-indexer tradingtime-keeper tradingtime-maker tradingtime-bots bootstrap; do cp "$CARGO_TARGET_DIR/release/$b" "$BIN/"; done
 
   echo "starting surfpool"
   start surfpool surfpool start --ci --network mainnet --no-deploy -y -p 8899 -w 8900
@@ -65,8 +67,42 @@ up() {
   echo "stack up: $DIR/env.json"
 }
 
+surfnet() { curl -s -X POST "$RPC" -H 'content-type: application/json' -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$1\",\"params\":$2}" >/dev/null; }
+USDC_MINT="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+
+fund() {
+  local pk; pk="$(solana-keygen pubkey "$KEYS/$1.json")"
+  surfnet surfnet_setAccount "[\"$pk\",{\"lamports\":100000000000}]"
+  surfnet surfnet_setTokenAccount "[\"$pk\",\"$USDC_MINT\",{\"amount\":$2}]"
+}
+
+sim() {
+  up
+  local ticks="$ROOT/tests/fixtures/sol-ticks.csv"
+  for k in maker3 maker4; do
+    [ -f "$KEYS/$k.json" ] || solana-keygen new --no-bip39-passphrase --silent -o "$KEYS/$k.json" >/dev/null
+    fund "$k" 200000000000
+  done
+  start maker3 "$BIN/tradingtime-maker" --rpc "$RPC" --keypair "$KEYS/maker3.json" --deposit-usdc 80000 \
+    --half-spread-bps 5 --impact-bps-per-10k 6 --inventory-limit-usdc 40000 --feed "replay:$ticks"
+  start maker4 "$BIN/tradingtime-maker" --rpc "$RPC" --keypair "$KEYS/maker4.json" --deposit-usdc 30000 \
+    --half-spread-bps 1.5 --impact-bps-per-10k 25 --inventory-limit-usdc 10000 --feed "replay:$ticks"
+  start bots "$BIN/tradingtime-bots" --rpc "$RPC" --keys-dir "$KEYS/bots" --traders "${BOTS:-12}" \
+    --tick-ms "${BOT_TICK_MS:-1500}" --pyth-replay "$ticks" --pyth-every-secs "${PYTH_EVERY_SECS:-10}" --seed "${SEED:-42}"
+  echo "sim running: ${BOTS:-12} bot traders, 4 makers, Pyth every ${PYTH_EVERY_SECS:-10}s (logs: $DIR/bots.log)"
+}
+
+status() {
+  [ -f "$PIDS" ] || { echo "stack not running"; return 0; }
+  while read -r pid name; do
+    if kill -0 "$pid" 2>/dev/null; then echo "up    $name ($pid)"; else echo "DOWN  $name ($pid) — see $DIR/$name.log"; fi
+  done <"$PIDS"
+}
+
 case "${1:-}" in
   up) up ;;
+  sim) sim ;;
+  status) status ;;
   down) down ;;
-  *) echo "usage: $0 up|down" >&2; exit 2 ;;
+  *) echo "usage: $0 up|sim|status|down" >&2; exit 2 ;;
 esac

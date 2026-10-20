@@ -166,3 +166,101 @@ pub enum WsMsg {
     Trader(TraderJson),
     Other(String),
 }
+
+// ---- Analytics (.agent/analytics-api.md) ----
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AnalyticsSummaryJson {
+    pub traders: u64,
+    pub makers: u64,
+    pub active_traders_24h: u64,
+    pub trades_24h: u64,
+    pub volume_24h_usdc: f64,
+    pub volume_total_usdc: f64,
+    pub fees_24h_usdc: f64,
+    pub fees_total_usdc: f64,
+    pub long_oi_usdc: f64,
+    pub short_oi_usdc: f64,
+    pub deposits_total_usdc: f64,
+    pub tvl_usdc: f64,
+    pub insurance_usdc: f64,
+    pub treasury_usdc: f64,
+    pub liquidations_24h: u64,
+    pub adl_volume_24h_usdc: f64,
+    pub traders_in_profit: u64,
+    pub total_trader_pnl_usdc: f64,
+    pub total_maker_pnl_usdc: f64,
+    pub updated_ts: i64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VolumeBucketJson {
+    pub ts: i64,
+    pub volume_usdc: f64,
+    pub long_volume_usdc: f64,
+    pub short_volume_usdc: f64,
+    pub trades: u64,
+    pub fees_usdc: f64,
+    pub liquidation_volume_usdc: f64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LeaderboardRowJson {
+    pub owner: String,
+    pub is_operator: bool,
+    pub equity_usdc: f64,
+    pub net_deposits_usdc: f64,
+    pub pnl_usdc: f64,
+    pub pnl_pct: f64,
+    pub upnl_usdc: f64,
+    /// Signed: + long time, − short time.
+    pub q_usdc: f64,
+    pub volume_usdc: f64,
+    pub trades: u64,
+    pub fees_paid_usdc: f64,
+    pub liquidations: u64,
+    pub last_trade_ts: Option<i64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MakerRowJson {
+    pub owner: String,
+    /// "active" | "unbonding" | "closed"
+    pub status: String,
+    pub fresh: bool,
+    pub bond_usdc: f64,
+    pub equity_usdc: f64,
+    pub net_deposits_usdc: f64,
+    pub pnl_usdc: f64,
+    pub inventory_usdc: f64,
+    pub volume_usdc: f64,
+    pub fills: u64,
+    pub half_spread_bps: f64,
+    pub fair_secs: f64,
+}
+
+/// A recent fill across all traders: `fill_json` plus the taker's owner.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AnalyticsTradeJson {
+    #[serde(flatten)]
+    pub fill: FillJson,
+    #[serde(default)]
+    pub trader: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LiquidationJson {
+    pub t: i64,
+    pub signature: String,
+    pub trader: String,
+    pub liquidator: String,
+    pub size_usdc: f64,
+    pub bankruptcy_secs: f64,
+    pub penalty_usdc: f64,
+    pub insurance_used_usdc: f64,
+}

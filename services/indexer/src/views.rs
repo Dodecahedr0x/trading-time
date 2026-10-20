@@ -32,7 +32,7 @@ pub fn secs(ln: Fx) -> f64 {
     to_f64(ln).exp()
 }
 
-fn usdc(v: i128) -> f64 {
+pub fn usdc(v: i128) -> f64 {
     v as f64 / 1e6
 }
 
@@ -128,12 +128,16 @@ fn operator_rows(store: &Store, m: &Market) -> Result<Vec<OperatorRow>, ViewErro
     Ok(rows)
 }
 
-fn operator_json(r: &OperatorRow) -> Value {
-    let status = match OperatorStatus::from_u8(r.op.status) {
+pub fn operator_status(status: u8) -> &'static str {
+    match OperatorStatus::from_u8(status) {
         Some(OperatorStatus::Active) => "active",
         Some(OperatorStatus::Unbonding) => "unbonding",
         _ => "closed",
-    };
+    }
+}
+
+fn operator_json(r: &OperatorRow) -> Value {
+    let status = operator_status(r.op.status);
     json!({
         "owner": r.owner,
         "fair_secs": secs(r.op.fair_ln.get()),

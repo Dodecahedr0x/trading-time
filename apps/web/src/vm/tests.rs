@@ -291,3 +291,255 @@ fn chart_layout() {
     assert!(flat.bars[0].body_h >= 1.0 && flat.bars[0].body_top.is_finite());
     assert!(layout(&[], 100.0, 100.0, 3).bars.is_empty());
 }
+
+mod analytics {
+    use super::close;
+    use crate::types::*;
+    use crate::vm::analytics::*;
+    use crate::vm::Side;
+
+    #[test]
+    fn hash_routes() {
+        assert_eq!(page_from_hash(""), Page::Trade);
+        assert_eq!(page_from_hash("#"), Page::Trade);
+        assert_eq!(page_from_hash("#/"), Page::Trade);
+        assert_eq!(page_from_hash("#/trade"), Page::Trade);
+        assert_eq!(page_from_hash("#/analytics"), Page::Analytics);
+        assert_eq!(page_from_hash("#analytics"), Page::Analytics);
+        assert_eq!(page_from_hash("#/analytics/"), Page::Analytics);
+        assert_eq!(page_from_hash("#/nope"), Page::Trade);
+    }
+
+    #[test]
+    fn relative_times() {
+        let now = 1_792_512_680;
+        assert_eq!(relative_time(now - 12, now), "12s ago");
+        assert_eq!(relative_time(now, now), "just now");
+        assert_eq!(relative_time(now + 5, now), "just now");
+        assert_eq!(relative_time(now - 60, now), "1m ago");
+        assert_eq!(relative_time(now - 3_599, now), "59m ago");
+        assert_eq!(relative_time(now - 7_200, now), "2h ago");
+        assert_eq!(relative_time(now - 3 * 86_400 - 5, now), "3d ago");
+        assert_eq!(relative_time(0, now), "\u{2014}");
+    }
+
+    #[test]
+    fn owners_shorten() {
+        assert_eq!(owner_short("7thnMqBXPE3QaNnDjFaEVhcMK8UBiwRaRELtZSDBkz4h"), "7thn\u{2026}kz4h");
+        assert_eq!(owner_short(""), "\u{2014}");
+        assert_eq!(owner_short("short"), "short");
+    }
+
+    fn summary() -> AnalyticsSummaryJson {
+        AnalyticsSummaryJson {
+            traders: 12,
+            makers: 4,
+            active_traders_24h: 9,
+            trades_24h: 340,
+            volume_24h_usdc: 512_000.0,
+            volume_total_usdc: 1_200_000.0,
+            fees_24h_usdc: 256.0,
+            fees_total_usdc: 600.0,
+            long_oi_usdc: 30_000.0,
+            short_oi_usdc: 28_000.0,
+            deposits_total_usdc: 2_400_000.0,
+            tvl_usdc: 2_350_000.0,
+            insurance_usdc: 120.0,
+            treasury_usdc: 40.0,
+            liquidations_24h: 3,
+            adl_volume_24h_usdc: 1_500.0,
+            traders_in_profit: 5,
+            total_trader_pnl_usdc: -1234.5,
+            total_maker_pnl_usdc: 1100.0,
+            updated_ts: 1_792_512_680,
+        }
+    }
+
+    #[test]
+    fn kpi_cards() {
+        let k = kpis(Some(&summary()));
+        let ids: Vec<&str> = k.iter().map(|k| k.id).collect();
+        assert_eq!(
+            ids,
+            ["kpi-volume-24h", "kpi-oi", "kpi-traders", "kpi-tvl", "kpi-fees", "kpi-insurance", "kpi-liquidations-24h"]
+        );
+        let v = |id: &str| k.iter().find(|k| k.id == id).unwrap().clone();
+        assert_eq!(v("kpi-volume-24h").value, "$512.0K");
+        assert_eq!(v("kpi-volume-24h").sub, "340 trades \u{b7} $1.20M all time");
+        assert_eq!(v("kpi-oi").value, "$58.0K");
+        assert_eq!(v("kpi-traders").value, "12");
+        assert!(v("kpi-traders").sub.contains("4 makers"));
+        assert_eq!(v("kpi-tvl").value, "$2.35M");
+        assert_eq!(v("kpi-fees").value, "$256.00");
+        assert_eq!(v("kpi-insurance").value, "$120.00");
+        assert!(v("kpi-insurance").sub.contains("\u{2212}$1,234.50"));
+        assert_eq!(v("kpi-liquidations-24h").value, "3");
+        assert_eq!(v("kpi-liquidations-24h").sub, "ADL $1.5K");
+        let empty = kpis(None);
+        assert_eq!(empty.len(), 7);
+        assert!(empty.iter().all(|k| k.value == "\u{2014}"));
+        assert_eq!(empty[0].id, "kpi-volume-24h");
+    }
+
+    fn bucket(ts: i64, long: f64, short: f64) -> VolumeBucketJson {
+        VolumeBucketJson { ts, volume_usdc: long + short, long_volume_usdc: long, short_volume_usdc: short, ..Default::default() }
+    }
+
+    #[test]
+    fn volume_bars_stack() {
+        let b = [bucket(0, 300.0, 100.0), bucket(3600, 0.0, 0.0), bucket(7200, 100.0, 100.0), bucket(10_800, 50.0, 0.0)];
+        let g = volume_layout(&b, 400.0, 100.0);
+        assert_eq!(g.bars.len(), 4);
+        let a = &g.bars[0];
+        assert!(close(a.x, 14.0, 1e-9));
+        assert!(close(a.w, 72.0, 1e-9));
+        assert!(close(a.long_h, 75.0, 1e-9));
+        assert!(close(a.long_y, 25.0, 1e-9));
+        assert!(close(a.short_h, 25.0, 1e-9));
+        assert!(close(a.short_y, 0.0, 1e-9));
+        assert_eq!(g.bars[1].long_h, 0.0);
+        assert_eq!(g.bars[1].short_y, 100.0);
+        assert!(close(g.bars[2].long_h + g.bars[2].short_h, 50.0, 1e-9));
+        assert!(close(g.bars[2].x, 214.0, 1e-9));
+        assert_eq!(g.y_ticks.len(), 3);
+        assert_eq!(g.y_ticks[0].label, "$400");
+        assert!(close(g.y_ticks[0].pos, 0.0, 1e-9));
+        assert_eq!(g.y_ticks[1].label, "$200");
+        assert!(close(g.y_ticks[2].pos, 100.0, 1e-9));
+        let xs: Vec<f64> = g.x_ticks.iter().map(|t| t.pos).collect();
+        assert_eq!(xs, [50.0, 250.0, 350.0]);
+        assert_eq!(g.x_ticks[0].label, "01-01 00:00");
+        assert!(g.bars[0].title.contains("long $300"));
+    }
+
+    #[test]
+    fn volume_bars_edge_cases() {
+        assert!(volume_layout(&[], 400.0, 100.0).bars.is_empty());
+        let z = volume_layout(&[bucket(0, 0.0, 0.0), bucket(60, 0.0, 0.0)], 400.0, 100.0);
+        assert_eq!(z.bars.len(), 2);
+        assert!(z.bars.iter().all(|b| b.long_h == 0.0 && b.short_h == 0.0));
+        assert!(z.y_ticks.is_empty());
+        assert_eq!(z.x_ticks.len(), 2);
+        let neg = volume_layout(&[bucket(0, -5.0, 10.0)], 100.0, 100.0);
+        assert_eq!(neg.bars[0].long_h, 0.0);
+        assert!(close(neg.bars[0].short_h, 100.0, 1e-9));
+    }
+
+    #[test]
+    fn pnl_bins() {
+        let h = pnl_histogram(&[-100.0, -10.0, 0.0, 5.0, 40.0, 100.0, f64::NAN], 4, 400.0, 80.0);
+        assert_eq!(h.len(), 4);
+        let edges: Vec<(f64, f64)> = h.iter().map(|b| (b.lo, b.hi)).collect();
+        assert_eq!(edges, [(-100.0, -50.0), (-50.0, 0.0), (0.0, 50.0), (50.0, 100.0)]);
+        let counts: Vec<usize> = h.iter().map(|b| b.count).collect();
+        assert_eq!(counts, [1, 1, 3, 1]);
+        assert_eq!(h.iter().map(|b| b.gain).collect::<Vec<_>>(), [false, false, true, true]);
+        assert!(close(h[2].h, 80.0, 1e-9));
+        assert!(close(h[2].y, 0.0, 1e-9));
+        assert!(close(h[0].h, 80.0 / 3.0, 1e-9));
+        assert!(close(h[1].x, 101.0, 1e-9));
+        assert!(close(h[1].w, 98.0, 1e-9));
+        // Odd bin counts round up so zero stays an edge.
+        assert_eq!(pnl_histogram(&[1.0], 5, 100.0, 10.0).len(), 6);
+        assert!(pnl_histogram(&[], 8, 100.0, 10.0).is_empty());
+        let zeros = pnl_histogram(&[0.0, 0.0], 2, 100.0, 10.0);
+        assert_eq!(zeros.iter().map(|b| b.count).collect::<Vec<_>>(), [0, 2]);
+    }
+
+    #[test]
+    fn leaderboard_and_pnls() {
+        let now = 1_000_000;
+        let rows = vec![
+            LeaderboardRowJson {
+                owner: "7thnMqBXPE3QaNnDjFaEVhcMK8UBiwRaRELtZSDBkz4h".into(),
+                equity_usdc: 5200.0,
+                pnl_usdc: 200.0,
+                pnl_pct: 0.04,
+                q_usdc: 3000.0,
+                volume_usdc: 21_000.0,
+                trades: 14,
+                last_trade_ts: Some(now - 80),
+                ..Default::default()
+            },
+            LeaderboardRowJson { owner: "Op".into(), is_operator: true, pnl_usdc: -50.0, pnl_pct: -0.01, q_usdc: -1800.0, ..Default::default() },
+        ];
+        let r = leaderboard_rows(&rows, now);
+        assert_eq!(r[0].rank, 1);
+        assert_eq!(r[0].owner_short, "7thn\u{2026}kz4h");
+        assert_eq!(r[0].pnl, "+$200.00");
+        assert_eq!(r[0].pnl_pct, "+4.00%");
+        assert!(r[0].gain);
+        assert_eq!(r[0].position, "$3.0K long");
+        assert_eq!(r[0].position_side, Some(Side::Long));
+        assert_eq!(r[0].volume, "$21.0K");
+        assert_eq!(r[0].last_trade, "1m ago");
+        assert_eq!(r[1].rank, 2);
+        assert!(r[1].maker);
+        assert!(!r[1].gain);
+        assert_eq!(r[1].pnl, "\u{2212}$50.00");
+        assert_eq!(r[1].position, "$1.8K short");
+        assert_eq!(r[1].last_trade, "\u{2014}");
+        assert_eq!(trader_pnls(&rows), [200.0]);
+    }
+
+    #[test]
+    fn makers_trades_liquidations() {
+        let m = maker_rows(&[MakerRowJson {
+            owner: "Op".into(),
+            status: "active".into(),
+            fresh: true,
+            bond_usdc: 1000.0,
+            equity_usdc: 51_000.0,
+            pnl_usdc: 1000.0,
+            inventory_usdc: -1800.0,
+            volume_usdc: 90_000.0,
+            fills: 120,
+            half_spread_bps: 2.0,
+            fair_secs: 5400.0,
+            ..Default::default()
+        }]);
+        assert_eq!(m[0].status, "active");
+        assert_eq!(m[0].bond, "$1.0K");
+        assert_eq!(m[0].pnl, "+$1,000.00");
+        assert_eq!(m[0].inventory, "\u{2212}$1,800.00");
+        assert_eq!(m[0].spread, "2.0 bps");
+        assert_eq!(m[0].fair, "1h 30m");
+        assert_eq!(m[0].fills, "120");
+        let fill = FillJson {
+            signature: "s".into(),
+            slot: 1,
+            t: 990,
+            side: SideStr::Short,
+            kind: "swap".into(),
+            size_usdc: 250.0,
+            price_secs: 3600.0,
+            fee_usdc: 0.125,
+            operator: "Op".into(),
+        };
+        let t = trade_rows(&[AnalyticsTradeJson { fill, trader: "Tr".into() }], 1000);
+        assert_eq!(t[0].time, "10s ago");
+        assert_eq!(t[0].side, Side::Short);
+        assert_eq!(t[0].side_label, "Short time");
+        assert_eq!(t[0].size, "$250.00");
+        assert_eq!(t[0].price, "1h");
+        assert_eq!(t[0].fee, "$0.13");
+        assert_eq!(t[0].trader_short, "Tr");
+        let l = liquidation_rows(
+            &[LiquidationJson {
+                t: 400,
+                trader: "T".into(),
+                liquidator: String::new(),
+                size_usdc: 3000.0,
+                bankruptcy_secs: 900.0,
+                penalty_usdc: 30.0,
+                ..Default::default()
+            }],
+            1000,
+        );
+        assert_eq!(l[0].time, "10m ago");
+        assert_eq!(l[0].liquidator_short, "\u{2014}");
+        assert_eq!(l[0].bankruptcy, "15m");
+        assert_eq!(l[0].penalty, "$30.00");
+        assert_eq!(l[0].insurance, "$0.00");
+    }
+}

@@ -4,7 +4,7 @@ members = [
   "crates/core", "crates/cli", "crates/app",
   "crates/math", "crates/interface", "crates/client",
   "programs/tradingtime",
-  "services/keeper", "services/maker", "services/indexer",
+  "services/keeper", "services/maker", "services/indexer", "services/bots",
   "apps/web",
   "tests/integration",
 ]

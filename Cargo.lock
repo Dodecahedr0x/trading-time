@@ -10513,6 +10513,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "tradingtime-bots"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "rand 0.9.5",
+ "rand_chacha 0.9.0",
+ "serde_json",
+ "solana-instruction",
+ "solana-keypair",
+ "solana-pubkey 4.2.1",
+ "solana-signer",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "tradingtime-client",
+ "tradingtime-interface",
+ "tradingtime-math",
+]
+
+[[package]]
 name = "tradingtime-client"
 version = "0.1.0"
 dependencies = [

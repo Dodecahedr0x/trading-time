@@ -1,5 +1,6 @@
 //! Host-testable view-model: formatting and derived display rows.
 
+pub mod analytics;
 pub mod chart;
 pub mod format;
 pub mod ladder;

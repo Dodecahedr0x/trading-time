@@ -79,6 +79,50 @@ pub struct IndexPoint {
     pub index_ln: i128,
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FillStats {
+    pub volume: u64,
+    pub trades: u64,
+    pub fees: u64,
+    pub last_ts: Option<i64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FillTotals {
+    pub trades: u64,
+    pub volume: u64,
+    pub fees: u64,
+    pub adl_volume: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct VolumeBucket {
+    pub ts: i64,
+    pub volume: u64,
+    pub long: u64,
+    pub short: u64,
+    pub trades: u64,
+    pub fees: u64,
+    pub liquidation: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LiquidationRow {
+    pub signature: String,
+    pub ts: i64,
+    pub trader: String,
+    pub liquidator: String,
+    pub size: u64,
+    pub bankruptcy_ln: i128,
+    pub penalty: u64,
+    pub insurance_used: u64,
+}
+
+/// The wallet owner for a key that may be a trader PDA.
+pub fn owner_of(pdas: &HashMap<String, String>, key: String) -> String {
+    pdas.get(&key).cloned().unwrap_or(key)
+}
+
 /// Which snapshot kind changed; lets ingest decide what to broadcast.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Changed {
@@ -538,6 +582,167 @@ impl Store {
             "SELECT ts, index_ln FROM (SELECT ts, index_ln, signature, seq FROM index_events ORDER BY ts DESC, signature, seq LIMIT ?1) ORDER BY ts",
         )?;
         let rows = st.query_map([limit as i64], |r| Ok(IndexPoint { ts: r.get(0)?, index_ln: parse_i128(r.get(1)?) }))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Taker fill stats per wallet owner (PDA-named rows folded into their owner).
+    pub fn taker_stats(&self) -> Result<HashMap<String, FillStats>> {
+        self.grouped_fill_stats("SELECT trader, SUM(size), COUNT(*), SUM(fee), MAX(ts) FROM fills GROUP BY trader", [])
+    }
+
+    /// Maker fill stats per operator owner, swap and limit fills only.
+    pub fn maker_stats(&self) -> Result<HashMap<String, FillStats>> {
+        self.grouped_fill_stats(
+            "SELECT operator, SUM(size), COUNT(*), SUM(fee), MAX(ts) FROM fills WHERE kind IN (?1, ?2) GROUP BY operator",
+            params![TRADE_SWAP, TRADE_LIMIT],
+        )
+    }
+
+    fn grouped_fill_stats(&self, sql: &str, p: impl rusqlite::Params) -> Result<HashMap<String, FillStats>> {
+        let pdas = self.pda_owners()?;
+        let mut st = self.conn.prepare(sql)?;
+        let rows = st.query_map(p, |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                FillStats {
+                    volume: r.get::<_, i64>(1)? as u64,
+                    trades: r.get::<_, i64>(2)? as u64,
+                    fees: r.get::<_, i64>(3)? as u64,
+                    last_ts: r.get(4)?,
+                },
+            ))
+        })?;
+        let mut out: HashMap<String, FillStats> = HashMap::new();
+        for row in rows {
+            let (k, s) = row?;
+            let e = out.entry(owner_of(&pdas, k)).or_default();
+            e.volume += s.volume;
+            e.trades += s.trades;
+            e.fees += s.fees;
+            e.last_ts = e.last_ts.max(s.last_ts);
+        }
+        Ok(out)
+    }
+
+    /// Fill totals with ts >= since.
+    pub fn fill_totals(&self, since: i64) -> Result<FillTotals> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(size), 0), COALESCE(SUM(fee), 0),
+                    COALESCE(SUM(CASE WHEN kind = ?2 THEN size ELSE 0 END), 0)
+             FROM fills WHERE ts >= ?1",
+            params![since, TRADE_ADL],
+            |r| {
+                Ok(FillTotals {
+                    trades: r.get::<_, i64>(0)? as u64,
+                    volume: r.get::<_, i64>(1)? as u64,
+                    fees: r.get::<_, i64>(2)? as u64,
+                    adl_volume: r.get::<_, i64>(3)? as u64,
+                })
+            },
+        )?)
+    }
+
+    /// Distinct taker owners with a fill at ts >= since.
+    pub fn active_takers(&self, since: i64) -> Result<usize> {
+        let pdas = self.pda_owners()?;
+        let mut st = self.conn.prepare("SELECT DISTINCT trader FROM fills WHERE ts >= ?1")?;
+        let keys = st.query_map([since], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(keys.into_iter().map(|k| owner_of(&pdas, k)).collect::<std::collections::HashSet<_>>().len())
+    }
+
+    /// Σ deposits − Σ withdrawals per wallet owner.
+    pub fn net_deposits(&self) -> Result<HashMap<String, i64>> {
+        let pdas = self.pda_owners()?;
+        let mut st = self.conn.prepare(
+            "SELECT owner, SUM(CASE WHEN kind = ?1 THEN ABS(amount) ELSE -ABS(amount) END)
+             FROM cash_events WHERE kind IN (?1, ?2) GROUP BY owner",
+        )?;
+        let rows =
+            st.query_map(params![CASH_DEPOSIT, CASH_WITHDRAW], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        let mut out: HashMap<String, i64> = HashMap::new();
+        for row in rows {
+            let (k, v) = row?;
+            *out.entry(owner_of(&pdas, k)).or_default() += v;
+        }
+        Ok(out)
+    }
+
+    /// Σ deposits across all owners.
+    pub fn deposits_total(&self) -> Result<u64> {
+        let v: i64 = self.conn.query_row(
+            "SELECT COALESCE(SUM(ABS(amount)), 0) FROM cash_events WHERE kind = ?1",
+            [CASH_DEPOSIT],
+            |r| r.get(0),
+        )?;
+        Ok(v as u64)
+    }
+
+    /// Liquidation count per wallet owner.
+    pub fn liquidation_counts(&self) -> Result<HashMap<String, u64>> {
+        let pdas = self.pda_owners()?;
+        let mut st = self.conn.prepare("SELECT trader, COUNT(*) FROM liquidations GROUP BY trader")?;
+        let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        let mut out: HashMap<String, u64> = HashMap::new();
+        for row in rows {
+            let (k, n) = row?;
+            *out.entry(owner_of(&pdas, k)).or_default() += n as u64;
+        }
+        Ok(out)
+    }
+
+    pub fn liquidations_since(&self, since: i64) -> Result<u64> {
+        let n: i64 = self.conn.query_row("SELECT COUNT(*) FROM liquidations WHERE ts >= ?1", [since], |r| r.get(0))?;
+        Ok(n as u64)
+    }
+
+    /// Most recent liquidations, newest first, trader normalised to the wallet owner.
+    pub fn recent_liquidations(&self, limit: usize) -> Result<Vec<LiquidationRow>> {
+        let pdas = self.pda_owners()?;
+        let mut st = self.conn.prepare(
+            "SELECT signature, ts, trader, liquidator, size, bankruptcy_ln, penalty, insurance_used FROM liquidations
+             ORDER BY ts DESC, signature DESC, seq DESC LIMIT ?1",
+        )?;
+        let rows = st.query_map([limit as i64], |r| {
+            Ok(LiquidationRow {
+                signature: r.get(0)?,
+                ts: r.get(1)?,
+                trader: r.get(2)?,
+                liquidator: r.get(3)?,
+                size: r.get::<_, i64>(4)? as u64,
+                bankruptcy_ln: parse_i128(r.get(5)?),
+                penalty: r.get::<_, i64>(6)? as u64,
+                insurance_used: r.get::<_, i64>(7)? as u64,
+            })
+        })?;
+        let mut out: Vec<LiquidationRow> = rows.collect::<rusqlite::Result<_>>()?;
+        for l in &mut out {
+            l.trader = owner_of(&pdas, std::mem::take(&mut l.trader));
+        }
+        Ok(out)
+    }
+
+    /// Non-empty fill buckets of `interval` seconds with start in [from, to), ascending.
+    pub fn volume_buckets(&self, interval: i64, from: i64, to: i64) -> Result<Vec<VolumeBucket>> {
+        let mut st = self.conn.prepare(
+            "SELECT ts - (ts % ?1) AS b, SUM(size), SUM(CASE WHEN side = ?4 THEN 0 ELSE size END),
+                    SUM(CASE WHEN side = ?4 THEN size ELSE 0 END), COUNT(*), SUM(fee),
+                    SUM(CASE WHEN kind IN (?5, ?6) THEN size ELSE 0 END)
+             FROM fills WHERE ts >= ?2 AND ts < ?3 GROUP BY b ORDER BY b",
+        )?;
+        let rows = st.query_map(
+            params![interval, from, to, tradingtime_math::Side::Short as u8, TRADE_LIQUIDATION, TRADE_ADL],
+            |r| {
+                Ok(VolumeBucket {
+                    ts: r.get(0)?,
+                    volume: r.get::<_, i64>(1)? as u64,
+                    long: r.get::<_, i64>(2)? as u64,
+                    short: r.get::<_, i64>(3)? as u64,
+                    trades: r.get::<_, i64>(4)? as u64,
+                    fees: r.get::<_, i64>(5)? as u64,
+                    liquidation: r.get::<_, i64>(6)? as u64,
+                })
+            },
+        )?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 

@@ -215,13 +215,19 @@ async fn indexer_routes_and_ws_on_live_stack() -> Result<()> {
     use futures::{SinkExt, StreamExt};
     let env = load_env()?;
     ensure!(api(&env, "/v1/health").await?["slot"].as_u64().unwrap() > 0);
-    for path in ["/v1/market", "/v1/quotes", "/v1/operators", "/v1/candles?interval=1h&limit=10", "/v1/index?limit=10", "/v1/orders/open", "/v1/liquidatable", "/v1/positions?side=long&limit=5"] {
+    for path in ["/v1/market", "/v1/quotes", "/v1/operators", "/v1/candles?interval=1h&limit=10", "/v1/index?limit=10", "/v1/orders/open", "/v1/liquidatable", "/v1/positions?side=long&limit=5",
+        "/v1/analytics/summary", "/v1/analytics/volume?interval=1h&limit=24", "/v1/analytics/leaderboard?sort=pnl&limit=10",
+        "/v1/analytics/makers", "/v1/analytics/trades?limit=10", "/v1/analytics/liquidations?limit=10"] {
         api(&env, path).await.with_context(|| path.to_string())?;
     }
     let r = reqwest::get(format!("{}/v1/traders/{}", env.api_url, Keypair::new().pubkey())).await?;
     ensure!(r.status() == 404, "unknown trader -> {}", r.status());
     let r = reqwest::get(format!("{}/v1/candles?interval=7m", env.api_url)).await?;
     ensure!(r.status() == 400, "bad interval -> {}", r.status());
+    let r = reqwest::get(format!("{}/v1/analytics/leaderboard?sort=luck", env.api_url)).await?;
+    ensure!(r.status() == 400, "bad sort -> {}", r.status());
+    let summary = api(&env, "/v1/analytics/summary").await?;
+    ensure!(summary["makers"].as_u64().is_some_and(|n| n >= 2), "summary {summary}");
 
     let ws_url = env.api_url.replace("http", "ws") + "/v1/ws";
     let (mut ws, _) = tokio_tungstenite::connect_async(ws_url).await?;

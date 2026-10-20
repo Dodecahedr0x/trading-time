@@ -1,4 +1,5 @@
 mod account;
+mod analytics;
 mod chart;
 mod ladder;
 mod market;
@@ -9,6 +10,7 @@ pub mod trade;
 
 use crate::config::Config;
 use crate::types::*;
+use crate::vm::analytics::{page_from_hash, Page};
 use crate::vm::ticket::OrderType;
 use crate::vm::Side;
 use crate::{api, chain};
@@ -37,6 +39,7 @@ pub struct State {
     pub kind: Signal<OrderType>,
     pub size: Signal<String>,
     pub limit: Signal<String>,
+    pub page: Signal<Page>,
 }
 
 impl State {
@@ -61,6 +64,7 @@ impl State {
             kind: Signal::new(OrderType::Market),
             size: Signal::new("5,000".into()),
             limit: Signal::new(String::new()),
+            page: Signal::new(page_from_hash(&current_hash())),
         }
     }
 }
@@ -105,10 +109,36 @@ pub async fn refresh_account(mut s: State) {
     }
 }
 
+fn current_hash() -> String {
+    web_sys::window().and_then(|w| w.location().hash().ok()).unwrap_or_default()
+}
+
+/// Sets `#/analytics` or `#/` (query params stay) and switches the page.
+pub fn go(mut s: State, page: Page) {
+    if let Some(w) = web_sys::window() {
+        let _ = w.location().set_hash(match page {
+            Page::Trade => "/",
+            Page::Analytics => "/analytics",
+        });
+    }
+    s.page.set(page);
+}
+
+/// Follows back/forward and manual hash edits.
+fn listen_hash(mut s: State) {
+    use wasm_bindgen::{closure::Closure, JsCast};
+    let Some(w) = web_sys::window() else { return };
+    let cb = Closure::<dyn FnMut()>::new(move || s.page.set(page_from_hash(&current_hash())));
+    if w.add_event_listener_with_callback("hashchange", cb.as_ref().unchecked_ref()).is_ok() {
+        cb.forget();
+    }
+}
+
 #[component]
 pub fn App() -> Element {
     let s = use_context_provider(State::new);
     use_hook(move || trade::init_wallet(s));
+    use_hook(move || listen_hash(s));
     use_future(move || async move {
         loop {
             refresh_market(s).await;
@@ -129,18 +159,24 @@ pub fn App() -> Element {
         }
     });
     let class = if *s.light.read() { "tt light" } else { "tt" };
+    let page = *s.page.read();
     rsx! {
         document::Link { rel: "stylesheet", href: style::FONTS }
         style { {style::CSS} }
         div { class,
             nav::Nav {}
-            market::MarketBar {}
-            div { class: "main",
-                chart::Chart {}
-                ladder::Quotes {}
-                div { class: "panel ticket-panel", ticket::Ticket {} }
+            match page {
+                Page::Trade => rsx! {
+                    market::MarketBar {}
+                    div { class: "main",
+                        chart::Chart {}
+                        ladder::Quotes {}
+                        div { class: "panel ticket-panel", ticket::Ticket {} }
+                    }
+                    div { class: "panel acct", account::Account {} }
+                },
+                Page::Analytics => rsx! { analytics::Analytics {} },
             }
-            div { class: "panel acct", account::Account {} }
         }
     }
 }
