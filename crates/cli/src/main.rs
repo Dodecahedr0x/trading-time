@@ -2,7 +2,9 @@
 //!
 //! cli [--feed gbm|regime|jump|csv] [--path file.csv] [--seed N] [--steps N] [--cap LOG_PER_MIN] [--worst-of 0|1] [--iv-weight W] [--iv-noise SD] [--iv-premium P] [--log 0|1] [--max-lev L] [--max-skew FRAC] [--lp USD] [--adl 0|1]
 //!     [--noise N] [--informed N] [--momentum N] [--chaser N] [--fast N] [--export out.csv]
+//!     [--venue pool|book] [--mm N] [--mm-inv USD] [--mm-hl SECS]   (book venue uses --max-lev and the agent counts; pool flags are ignored)
 
+use timeperp::book_sim::{BookSim, BookSimConfig};
 use timeperp::engine::{Sim, SimConfig};
 use timeperp::feed::{CsvFeed, Model, PriceFeed, SynthFeed, to_csv};
 use timeperp::oracle::sigma_per_sec;
@@ -16,7 +18,7 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    const FLAGS: [&str; 20] = [
+    const FLAGS: [&str; 24] = [
         "--feed",
         "--path",
         "--seed",
@@ -36,6 +38,10 @@ fn run() -> Result<(), String> {
         "--momentum",
         "--chaser",
         "--fast",
+        "--venue",
+        "--mm",
+        "--mm-inv",
+        "--mm-hl",
         "--export",
     ];
     if let Some(bad) = args.iter().step_by(2).find(|a| !FLAGS.contains(&a.as_str())) {
@@ -73,6 +79,31 @@ fn run() -> Result<(), String> {
     }
 
     let float = |name: &str| arg(name).map(|v| v.parse::<f64>().map_err(|e| format!("{name}: {e}"))).transpose();
+    if arg("--venue") == Some("book") {
+        let mut cfg = BookSimConfig { seed, ..Default::default() };
+        if let Some(lev) = float("--max-lev")? {
+            cfg.book.max_leverage = lev;
+        }
+        cfg.mm = num("--mm", cfg.mm as u64)? as usize;
+        if let Some(inv) = float("--mm-inv")? {
+            cfg.mm_inventory_limit = inv;
+        }
+        if let Some(hl) = float("--mm-hl")? {
+            cfg.mm_half_life = hl;
+        }
+        cfg.noise = num("--noise", cfg.noise as u64)? as usize;
+        cfg.informed = num("--informed", cfg.informed as u64)? as usize;
+        cfg.momentum = num("--momentum", cfg.momentum as u64)? as usize;
+        cfg.fast = num("--fast", cfg.fast as u64)? as usize;
+        let mut sim = BookSim::new(cfg, feed)?;
+        for _ in 0..steps {
+            if !sim.step() {
+                break;
+            }
+        }
+        print!("{}", sim.summary());
+        return Ok(());
+    }
     let max_move_per_min = float("--cap")?;
     let mut cfg = SimConfig { seed, max_move_per_min, ..Default::default() };
     cfg.iv_weight = float("--iv-weight")?.unwrap_or(0.0);

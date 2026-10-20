@@ -8,8 +8,12 @@ Under Brownian motion E[τ] = ln(1+x)² / σ², so the contract is economically 
 **inverse variance**. Trades fill at a model oracle (EWMA Parkinson vol → E[τ]) against
 an LP pool; the realized hitting-time index is tracked to check calibration.
 
+Two venues: an LP pool that takes the other side at the oracle price (`engine.rs`),
+and a central limit order book where market makers quote and the oracle is only the
+funding index (`book.rs`, `book_sim.rs`; CLI `--venue book`).
+
 ```
-crates/core   simulator library (feeds, band, vol, oracle, pool, agents, engine)
+crates/core   simulator library (feeds, band, vol, oracle, pool, book, agents, engines)
 crates/cli    headless backtests
 crates/app    Dioxus desktop UI
 ```

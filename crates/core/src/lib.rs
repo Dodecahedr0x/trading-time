@@ -5,6 +5,8 @@
 
 pub mod agents;
 pub mod band;
+pub mod book;
+pub mod book_sim;
 pub mod engine;
 pub mod feed;
 pub mod implied;

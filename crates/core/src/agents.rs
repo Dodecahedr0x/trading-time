@@ -15,6 +15,7 @@ pub enum AgentKind {
     Momentum,
     Chaser,
     FastVol,
+    MarketMaker,
 }
 
 #[derive(Clone, Debug, PartialEq)]
