@@ -2,7 +2,7 @@
 //!
 //! cli [--feed gbm|regime|jump|csv] [--path file.csv] [--seed N] [--steps N] [--cap LOG_PER_MIN] [--worst-of 0|1] [--iv-weight W] [--iv-noise SD] [--iv-premium P] [--log 0|1] [--max-lev L] [--max-skew FRAC] [--lp USD] [--adl 0|1]
 //!     [--noise N] [--informed N] [--momentum N] [--chaser N] [--fast N] [--export out.csv]
-//!     [--venue pool|book] [--mm N] [--mm-inv USD] [--mm-hl SECS] [--index-hl SECS]   (book venue uses --max-lev and the agent counts; pool flags are ignored)
+//!     [--venue pool|book] [--mm N] [--mm-inv USD] [--mm-hl SECS] [--index-hl SECS] [--mm-adapt 0|1] [--mm-scale X]   (book venue uses --max-lev and the agent counts; pool flags are ignored)
 
 use timeperp::book_sim::{BookSim, BookSimConfig};
 use timeperp::engine::{Sim, SimConfig};
@@ -18,7 +18,7 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    const FLAGS: [&str; 25] = [
+    const FLAGS: [&str; 27] = [
         "--feed",
         "--path",
         "--seed",
@@ -43,6 +43,8 @@ fn run() -> Result<(), String> {
         "--mm-inv",
         "--mm-hl",
         "--index-hl",
+        "--mm-adapt",
+        "--mm-scale",
         "--export",
     ];
     if let Some(bad) = args.iter().step_by(2).find(|a| !FLAGS.contains(&a.as_str())) {
@@ -94,6 +96,10 @@ fn run() -> Result<(), String> {
         }
         if let Some(hl) = float("--index-hl")? {
             cfg.ewma_half_life = hl;
+        }
+        cfg.mm_adaptive = num("--mm-adapt", 1)? != 0;
+        if let Some(scale) = float("--mm-scale")? {
+            cfg.mm_scale = scale;
         }
         cfg.noise = num("--noise", cfg.noise as u64)? as usize;
         cfg.informed = num("--informed", cfg.informed as u64)? as usize;

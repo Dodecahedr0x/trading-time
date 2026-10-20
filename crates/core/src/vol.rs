@@ -36,6 +36,10 @@ impl EwmaVol {
         self.last = Some((bar.t, bar.close));
     }
 
+    pub fn half_life(&self) -> f64 {
+        self.half_life
+    }
+
     /// Current estimate per √second.
     pub fn sigma(&self) -> f64 {
         self.var.sqrt()

@@ -9,8 +9,8 @@ use crate::metrics::{Calibration, KindPnl};
 use crate::oracle::{model_time_clamped, sigma_per_sec};
 use crate::pool::Side;
 use crate::vol::EwmaVol;
-use rand::seq::SliceRandom;
 use rand::SeedableRng;
+use rand::seq::SliceRandom;
 use rand_chacha::ChaCha8Rng;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -65,6 +65,10 @@ pub trait BookAgent {
     /// Sees every bar, including during warmup.
     fn observe(&mut self, _bar: &Bar) {}
     fn act(&mut self, view: &BookView, rng: &mut ChaCha8Rng) -> Vec<BookAction>;
+    /// One-line state for the run summary (market makers only).
+    fn describe(&self) -> Option<String> {
+        None
+    }
 }
 
 /// An agent's own realized-vol model price.
@@ -97,6 +101,14 @@ impl Estimator {
 /// Quotes a ladder around its forecast of the index (from its own vol estimate),
 /// shifted against its inventory, with a half-spread that widens after fast moves.
 /// Stops quoting the side that would take inventory past `inventory_limit`.
+///
+/// With `adapt`, the whole half-spread is scaled by a factor the maker tunes
+/// once a day by symmetric steps: tighter while its average daily PnL is
+/// positive (to win more flow), wider while it is negative (adverse selection).
+/// Averaging matters: spread income arrives as many small gains and adverse
+/// selection as rare large losses, so steering on the share of winning days
+/// tightens too far. The scale settles where average PnL is about zero, so
+/// competition rather than a fixed parameter sets the spread.
 pub struct MarketMaker {
     pub est: Estimator,
     pub half_spread: f64,
@@ -108,12 +120,25 @@ pub struct MarketMaker {
     pub inventory_limit: f64,
     /// Half-spread added per unit of recent mean |Δ fair| per bar.
     pub move_mult: f64,
+    pub adapt: bool,
+    /// Multiplier on the half-spread chosen by adaptation.
+    pub scale: f64,
     move_ema: f64,
     last: Option<f64>,
+    bars: u64,
+    window_equity: Option<f64>,
+    /// EMA of daily equity change.
+    pnl_ema: f64,
 }
 
+/// Bars between spread adjustments (one day of one-minute bars).
+const ADAPT_WINDOW: u64 = 1_440;
+const ADAPT_STEP: f64 = 0.9;
+/// Weight of the latest day in the PnL average (about a 5-day memory).
+const ADAPT_EMA: f64 = 0.2;
+
 impl MarketMaker {
-    pub fn new(est: Estimator, half_spread: f64, size: f64, inventory_limit: f64) -> Self {
+    pub fn new(est: Estimator, half_spread: f64, size: f64, inventory_limit: f64, adapt: bool) -> Self {
         Self {
             est,
             half_spread,
@@ -124,8 +149,13 @@ impl MarketMaker {
             skew: half_spread / inventory_limit,
             inventory_limit,
             move_mult: 1.5,
+            adapt,
+            scale: 1.0,
             move_ema: 0.0,
             last: None,
+            bars: 0,
+            window_equity: None,
+            pnl_ema: 0.0,
         }
     }
 }
@@ -148,9 +178,18 @@ impl BookAgent for MarketMaker {
         if view.equity <= 0.0 {
             return vec![BookAction::Quotes(vec![])];
         }
+        self.bars += 1;
+        if self.adapt && self.bars.is_multiple_of(ADAPT_WINDOW) {
+            if let Some(start) = self.window_equity {
+                self.pnl_ema += ADAPT_EMA * (view.equity - start - self.pnl_ema);
+                let step = if self.pnl_ema >= 0.0 { ADAPT_STEP } else { 1.0 / ADAPT_STEP };
+                self.scale = (self.scale * step).clamp(0.05, 20.0);
+            }
+            self.window_equity = Some(view.equity);
+        }
         let q = view.account.q;
         let center = fair - self.skew * q;
-        let half = self.half_spread + self.move_mult * self.move_ema;
+        let half = self.scale * (self.half_spread + self.move_mult * self.move_ema);
         let mut quotes = Vec::new();
         let (mut bid_room, mut ask_room) = (self.inventory_limit - q, self.inventory_limit + q);
         for i in 0..self.levels {
@@ -166,6 +205,16 @@ impl BookAgent for MarketMaker {
             ask_room -= ask;
         }
         vec![BookAction::Quotes(quotes)]
+    }
+
+    fn describe(&self) -> Option<String> {
+        Some(format!(
+            "est {:>3.0}m base {:.2}% scale {:>5.2} → half-spread now {:.2}%",
+            self.est.vol.half_life() / 60.0,
+            100.0 * self.half_spread,
+            self.scale,
+            100.0 * self.scale * (self.half_spread + self.move_mult * self.move_ema)
+        ))
     }
 }
 
@@ -289,6 +338,10 @@ pub struct BookSimConfig {
     pub mm_inventory_limit: f64,
     /// Half-life of every market maker's own vol estimate.
     pub mm_half_life: f64,
+    /// Makers tune their spreads daily from their own PnL.
+    pub mm_adaptive: bool,
+    /// Starting (or, without adaptation, fixed) spread multiplier.
+    pub mm_scale: f64,
     pub noise: usize,
     pub informed: usize,
     pub fast: usize,
@@ -310,10 +363,12 @@ impl Default for BookSimConfig {
             max_time: 7.0 * 86_400.0,
             book: BookConfig::default(),
             warmup_bars: 240,
-            mm: 3,
+            mm: 6,
             mm_wallet: 200_000.0,
-            mm_inventory_limit: 100_000.0,
-            mm_half_life: 3_600.0,
+            mm_inventory_limit: 20_000.0,
+            mm_half_life: 900.0,
+            mm_adaptive: true,
+            mm_scale: 1.0,
             noise: 20,
             informed: 2,
             fast: 2,
@@ -365,9 +420,11 @@ impl BookSim {
         let mut agents: Vec<Box<dyn BookAgent>> = Vec::new();
         let mut initial = Vec::new();
         for i in 0..cfg.mm {
-            // Same fair-value model; competing on base spread (0.25%, 0.5%, 1%, ...).
-            let est = Estimator::new(cfg.mm_half_life, &cfg);
-            let mm = MarketMaker::new(est, 0.0025 * 2f64.powi(i as i32), 10_000.0, cfg.mm_inventory_limit);
+            // Heterogeneous makers: estimator 1× or 2× the base half-life, base spread 0.25/0.5/1%.
+            let est = Estimator::new(cfg.mm_half_life * (1 + i % 2) as f64, &cfg);
+            let base = 0.0025 * 2f64.powi((i % 3) as i32);
+            let mut mm = MarketMaker::new(est, base, 10_000.0, cfg.mm_inventory_limit, cfg.mm_adaptive);
+            mm.scale = cfg.mm_scale;
             agents.push(Box::new(mm));
             initial.push(cfg.mm_wallet);
         }
@@ -542,9 +599,13 @@ impl BookSim {
 
     pub fn summary(&self) -> BookSummary {
         let mut by_kind: Vec<KindPnl> = Vec::new();
+        let mut makers = Vec::new();
         for (i, a) in self.agents.iter().enumerate() {
             let acct = &self.book.accounts[i];
             KindPnl::add(&mut by_kind, a.kind(), self.initial[i], acct.equity(self.mark), acct.volume);
+            if let Some(desc) = a.describe() {
+                makers.push((desc, acct.equity(self.mark) - self.initial[i], acct.volume));
+            }
         }
         let bars = self.steps.saturating_sub(self.cfg.warmup_bars).max(1) as f64;
         BookSummary {
@@ -564,6 +625,7 @@ impl BookSim {
             empty_frac: self.empty_bars as f64 / bars,
             mean_gap: self.gap_sum / bars,
             by_kind,
+            makers,
         }
     }
 }
@@ -589,6 +651,8 @@ pub struct BookSummary {
     /// Mean |ln(mark / index)|.
     pub mean_gap: f64,
     pub by_kind: Vec<KindPnl>,
+    /// Per market maker: state, PnL, volume.
+    pub makers: Vec<(String, f64, f64)>,
 }
 
 impl std::fmt::Display for BookSummary {
@@ -614,7 +678,12 @@ impl std::fmt::Display for BookSummary {
             100.0 * self.empty_frac
         )?;
         writeln!(f, "mid vs index   mean |gap| {:.2}%", 100.0 * self.mean_gap)?;
-        KindPnl::write_table(f, &self.by_kind)
+        KindPnl::write_table(f, &self.by_kind)?;
+        writeln!(f, "market makers:")?;
+        for (i, (desc, pnl, volume)) in self.makers.iter().enumerate() {
+            writeln!(f, "  mm{i} {desc}  PnL {pnl:>+10.0}  volume {volume:>11.0}")?;
+        }
+        Ok(())
     }
 }
 
@@ -645,6 +714,35 @@ mod tests {
         assert!((fc(86_400.0).time(2e-4) / index_time - 1.0 / 2.5).abs() < 1e-9);
         let slow = fc(7.0 * 86_400.0).time(2e-4) / index_time;
         assert!(slow > 0.75 && slow < 0.85, "{slow}");
+    }
+
+    #[test]
+    fn maker_tightens_on_profit_and_widens_on_loss() {
+        let cfg = BookSimConfig::default();
+        let mut mm = MarketMaker::new(Estimator::new(900.0, &cfg), 0.005, 10_000.0, 20_000.0, true);
+        let account = Account::default();
+        let forecast = Forecaster {
+            band_x: 0.01,
+            min_time: 60.0,
+            max_time: 1e6,
+            index_sigma: cfg.init_sigma,
+            index_half_life: cfg.ewma_half_life,
+            horizon: 86_400.0,
+        };
+        let mut rng = ChaCha8Rng::seed_from_u64(0);
+        let mut run_day = |mm: &mut MarketMaker, equity: f64| {
+            let view =
+                BookView { index: 5_000.0, forecast, mark: 5_000.0, true_sigma: None, account: &account, equity };
+            for _ in 0..ADAPT_WINDOW {
+                mm.act(&view, &mut rng);
+            }
+        };
+        run_day(&mut mm, 100_000.0); // sets the baseline
+        run_day(&mut mm, 101_000.0);
+        assert!((mm.scale - 0.9).abs() < 1e-12, "{}", mm.scale);
+        // One −2k day after a +1k day: the average turns negative, so it widens back.
+        run_day(&mut mm, 97_000.0);
+        assert!((mm.scale - 1.0).abs() < 1e-12, "{}", mm.scale);
     }
 
     #[test]
