@@ -1,4 +1,4 @@
-# Time Perp: Design Document
+# TradingTime: Design Document
 
 *Status: research complete in simulation; no on-chain code yet. Last updated 2026-10-20.*
 

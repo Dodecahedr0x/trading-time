@@ -5,10 +5,10 @@
 //!     [--venue pool|book] [--mm N] [--mm-inv USD] [--mm-hl SECS] [--index-hl SECS] [--mm-adapt 0|1] [--mm-scale X]
 //!     [--prop N] [--prop-h HALF_SPREAD] [--prop-k LN_PER_10K] [--prop-inv USD] [--maker-lag 0|1]   (book venue uses --max-lev and the agent counts; pool flags are ignored)
 
-use timeperp::book_sim::{BookSim, BookSimConfig};
-use timeperp::engine::{Sim, SimConfig};
-use timeperp::feed::{CsvFeed, Model, PriceFeed, SynthFeed, to_csv};
-use timeperp::oracle::sigma_per_sec;
+use tradingtime::book_sim::{BookSim, BookSimConfig};
+use tradingtime::engine::{Sim, SimConfig};
+use tradingtime::feed::{CsvFeed, Model, PriceFeed, SynthFeed, to_csv};
+use tradingtime::oracle::sigma_per_sec;
 
 fn main() {
     if let Err(e) = run() {

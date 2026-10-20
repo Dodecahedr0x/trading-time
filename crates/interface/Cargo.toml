@@ -1,0 +1,9 @@
+[package]
+name = "tradingtime-interface"
+edition.workspace = true
+version.workspace = true
+
+
+[dependencies]
+bytemuck.workspace = true
+tradingtime-math.workspace = true

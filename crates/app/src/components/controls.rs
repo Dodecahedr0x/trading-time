@@ -1,5 +1,5 @@
 use dioxus::prelude::*;
-use timeperp::engine::Sim;
+use tradingtime::engine::Sim;
 
 #[derive(Clone, PartialEq)]
 pub struct Params {
@@ -81,7 +81,7 @@ pub fn Controls(
     let feed = p.feed.clone();
     rsx! {
         aside {
-            h1 { "Time Perp" }
+            h1 { "TradingTime" }
             div { class: "tagline", "Trade the time for price to move ±x%. Long = calmer, short = wilder." }
 
             h2 { "Run" }

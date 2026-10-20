@@ -1,4 +1,6 @@
-# Time Perp
+# TradingTime
+
+Simulator for [tradingti.me](https://tradingti.me).
 
 A perpetual where **time and price are inverted**: you trade the expected time for
 spot to move ±x% (default ±1%). Each band hit resets the reference, so the market is

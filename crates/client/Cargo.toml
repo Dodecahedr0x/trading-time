@@ -1,0 +1,26 @@
+[package]
+name = "tradingtime-client"
+edition.workspace = true
+version.workspace = true
+
+[features]
+rpc = ["dep:solana-client", "dep:solana-keypair", "dep:solana-signer", "dep:solana-signature", "dep:solana-transaction", "dep:solana-commitment-config", "dep:tokio", "dep:reqwest", "dep:serde_json", "dep:hex", "dep:anyhow"]
+
+[dependencies]
+tradingtime-interface.workspace = true
+tradingtime-math.workspace = true
+bytemuck.workspace = true
+base64.workspace = true
+solana-pubkey = { workspace = true, features = ["curve25519"] }
+solana-instruction.workspace = true
+solana-client = { workspace = true, optional = true }
+solana-keypair = { workspace = true, optional = true }
+solana-signer = { workspace = true, optional = true }
+solana-signature = { version = "3", optional = true }
+solana-transaction = { workspace = true, optional = true }
+solana-commitment-config = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
+anyhow = { workspace = true, optional = true }

@@ -1,7 +1,7 @@
 use super::{fmt_dur, fmt_usd};
 use dioxus::prelude::*;
-use timeperp::agents::AgentKind;
-use timeperp::engine::{EventKind, Sim};
+use tradingtime::agents::AgentKind;
+use tradingtime::engine::{EventKind, Sim};
 
 #[component]
 pub fn EventLog(sim: Signal<Sim>) -> Element {

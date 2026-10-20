@@ -1,0 +1,8 @@
+[package]
+name = "tradingtime-math"
+edition.workspace = true
+version.workspace = true
+
+
+[dependencies]
+

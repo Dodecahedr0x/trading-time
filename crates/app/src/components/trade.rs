@@ -1,8 +1,8 @@
 use super::{fmt_dur, fmt_usd};
 use dioxus::prelude::*;
-use timeperp::agents::Action;
-use timeperp::engine::{Sim, USER};
-use timeperp::pool::Side;
+use tradingtime::agents::Action;
+use tradingtime::engine::{Sim, USER};
+use tradingtime::pool::Side;
 
 #[component]
 fn Stat(k: &'static str, v: String) -> Element {

@@ -1,0 +1,34 @@
+[package]
+name = "tradingtime-program"
+edition.workspace = true
+version.workspace = true
+
+[lib]
+name = "tradingtime_program"
+crate-type = ["cdylib", "lib"]
+
+[features]
+no-entrypoint = []
+
+[dependencies]
+pinocchio.workspace = true
+pinocchio-system.workspace = true
+pinocchio-token.workspace = true
+bytemuck.workspace = true
+tradingtime-interface.workspace = true
+tradingtime-math.workspace = true
+
+[dev-dependencies]
+litesvm.workspace = true
+solana-pubkey.workspace = true
+solana-instruction.workspace = true
+solana-transaction.workspace = true
+solana-keypair.workspace = true
+solana-signer.workspace = true
+solana-message.workspace = true
+solana-account.workspace = true
+solana-clock = "3.1"
+solana-transaction-error = "3.3"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

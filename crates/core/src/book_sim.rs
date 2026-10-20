@@ -247,19 +247,8 @@ impl BookAgent for PropAmm {
         if view.equity <= 0.0 {
             return vec![BookAction::Quotes(vec![])];
         }
-        let q = view.account.q;
-        // Inventory skew: at the limit the center moves by the curve's full depth on that side.
-        let center = view.forecast.time(self.est.sigma()).ln() - self.impact * q;
-        let mut quotes = Vec::new();
-        for (side, room) in [(Side::Long, self.inventory_limit - q), (Side::Short, self.inventory_limit + q)] {
-            let mut x = 0.0;
-            while x + 1e-9 < room {
-                let size = self.step.min(room - x);
-                let off = self.half_spread + self.impact * (x + size / 2.0);
-                quotes.push((side, (center - side.sign() * off).exp(), size));
-                x += size;
-            }
-        }
+        let fair_ln = view.forecast.time(self.est.sigma()).ln();
+        let quotes = prop_amm_ladder(fair_ln, self.half_spread, self.impact, self.inventory_limit, view.account.q, self.step);
         vec![BookAction::Quotes(quotes)]
     }
 
@@ -272,6 +261,37 @@ impl BookAgent for PropAmm {
             self.inventory_limit / 1_000.0
         ))
     }
+}
+
+/// The propAMM curve as a ladder of (quote side, price, size) steps, priced with the
+/// on-chain curve math (`tradingtime_math::curve`): each step trades at the curve's
+/// average ln price over that step. Quote side `Long` is a bid (the operator buys),
+/// which a taker hits by going short time.
+pub fn prop_amm_ladder(fair_ln: f64, half_spread: f64, impact: f64, inventory_limit: f64, q: f64, step: f64) -> Vec<(Side, f64, f64)> {
+    use tradingtime_math::{Side as TakerSide, USDC, curve, from_f64, to_f64};
+    let base = |usd: f64| (usd * USDC as f64).round();
+    let c = curve::Curve {
+        fair_ln: from_f64(fair_ln),
+        half_spread: from_f64(half_spread),
+        impact_per_usdc: from_f64(impact),
+        inventory_limit: base(inventory_limit).max(0.0) as u64,
+        q: base(q) as i64,
+    };
+    let mut quotes = Vec::new();
+    for (quote_side, taker) in [(Side::Long, TakerSide::Short), (Side::Short, TakerSide::Long)] {
+        let room = curve::room(&c, taker);
+        let step_base = base(step).max(1.0) as u64;
+        let (mut x, mut prev) = (0u64, 0i128);
+        while x < room {
+            let next = (x + step_base).min(room);
+            let Some(acc) = curve::integral(&c, taker, next) else { break };
+            let ln_price = to_f64((acc - prev) / (next - x) as i128);
+            quotes.push((quote_side, ln_price.exp(), (next - x) as f64 / USDC as f64));
+            prev = acc;
+            x = next;
+        }
+    }
+    quotes
 }
 
 /// Random market orders, closed after a random holding time.

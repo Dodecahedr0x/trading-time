@@ -1,13 +1,13 @@
-//! Desktop UI for the time-perp simulator.
+//! Desktop UI for the TradingTime simulator.
 
 mod components;
 
 use components::{Charts, Controls, EventLog, Params, TradePanel};
 use dioxus::prelude::*;
 use std::time::Duration;
-use timeperp::engine::{AgentMix, Sim, SimConfig};
-use timeperp::feed::{CsvFeed, Model, PriceFeed, SynthFeed};
-use timeperp::oracle::sigma_per_sec;
+use tradingtime::engine::{AgentMix, Sim, SimConfig};
+use tradingtime::feed::{CsvFeed, Model, PriceFeed, SynthFeed};
+use tradingtime::oracle::sigma_per_sec;
 
 const CSS: &str = include_str!("style.css");
 
@@ -15,7 +15,7 @@ fn main() {
     dioxus::LaunchBuilder::desktop()
         .with_cfg(
             dioxus::desktop::Config::new()
-                .with_window(dioxus::desktop::WindowBuilder::new().with_title("Time Perp Simulator"))
+                .with_window(dioxus::desktop::WindowBuilder::new().with_title("TradingTime Simulator"))
                 .with_menu(None),
         )
         .launch(App);
@@ -48,7 +48,7 @@ fn build(p: &Params) -> Result<Sim, String> {
         agents: AgentMix { noise: p.noise, informed: p.informed, momentum: p.momentum, chaser: p.chaser, fast: p.fast },
         max_move_per_min: (p.cap_pct_per_hour > 0.0).then(|| (1.0 + p.cap_pct_per_hour / 100.0).ln() / 60.0),
         iv_weight: p.iv_weight,
-        pool: timeperp::pool::PoolConfig { log_quote: p.log_quote, adl: p.adl, ..Default::default() },
+        pool: tradingtime::pool::PoolConfig { log_quote: p.log_quote, adl: p.adl, ..Default::default() },
         ..Default::default()
     };
     Sim::new(cfg, feed)

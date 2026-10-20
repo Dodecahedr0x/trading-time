@@ -1,9 +1,10 @@
 [package]
-name = "timeperp"
+name = "tradingtime"
 edition.workspace = true
 version.workspace = true
 
 [dependencies]
+tradingtime-math.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
 rand_distr.workspace = true

@@ -1,16 +1,63 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/cli", "crates/app"]
+members = [
+  "crates/core", "crates/cli", "crates/app",
+  "crates/math", "crates/interface", "crates/client",
+  "programs/tradingtime",
+  "services/keeper", "services/maker", "services/indexer",
+  "apps/web",
+  "tests/integration",
+]
 
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
 
 [workspace.dependencies]
-timeperp = { path = "crates/core" }
+tradingtime = { path = "crates/core" }
+tradingtime-math = { path = "crates/math" }
+tradingtime-interface = { path = "crates/interface" }
+tradingtime-client = { path = "crates/client" }
+tradingtime-program = { path = "programs/tradingtime", features = ["no-entrypoint"] }
 rand = "0.9"
 rand_chacha = "0.9"
 rand_distr = "0.5"
+
+bytemuck = { version = "1.25", features = ["derive", "min_const_generics"] }
+pinocchio = { version = "0.11.2", features = ["cpi"] }
+pinocchio-system = "0.6.1"
+pinocchio-token = "0.7.0"
+litesvm = "0.16"
+solana-client = "=4.2.2"
+solana-pubkey = "4"
+solana-instruction = "3"
+solana-transaction = "4"
+solana-keypair = "3"
+solana-signer = "3"
+solana-message = "4"
+solana-hash = "4"
+solana-commitment-config = "3"
+solana-account = "4"
+carbon-core = "2.0.0"
+carbon-rpc-transaction-crawler-datasource = "2.0.0"
+carbon-rpc-program-subscribe-datasource = "2.0.0"
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["ws"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+base64 = "0.22"
+hex = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dioxus = { version = "0.7", features = ["web"] }
+wallet-adapter = "1.4.2"
 
 # Monte-Carlo tests are slow unoptimized.
 [profile.test]

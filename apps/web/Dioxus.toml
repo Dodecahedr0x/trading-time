@@ -1,0 +1,6 @@
+[application]
+name = "tradingtime-web"
+default_platform = "web"
+
+[web.app]
+title = "TradingTime"

@@ -1,4 +1,4 @@
-//! Time-perp simulator: a perpetual on the expected time for price to move ±x%.
+//! TradingTime simulator: a perpetual on the expected time for price to move ±x%.
 //!
 //! Longs profit when moves take longer (volatility falls), shorts when they come
 //! sooner. Trades fill at a model price `ln(1+x)²/σ̂²` against an LP pool.

@@ -4,4 +4,4 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
-timeperp.workspace = true
+tradingtime.workspace = true

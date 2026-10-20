@@ -4,6 +4,6 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
-timeperp.workspace = true
+tradingtime.workspace = true
 dioxus = { version = "0.7", features = ["desktop"] }
 tokio = { version = "1", features = ["time"] }

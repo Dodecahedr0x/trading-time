@@ -1,5 +1,5 @@
 use dioxus::prelude::*;
-use timeperp::engine::Sim;
+use tradingtime::engine::Sim;
 
 const W: f64 = 600.0;
 const H: f64 = 170.0;
@@ -67,7 +67,7 @@ pub fn Charts(sim: Signal<Sim>) -> Element {
     let s = sim.read();
     let h = &s.history;
     let mins = |v: f64| v / 60.0;
-    let line = |label, color, f: &dyn Fn(&timeperp::engine::Snapshot) -> f64| Series {
+    let line = |label, color, f: &dyn Fn(&tradingtime::engine::Snapshot) -> f64| Series {
         label,
         color,
         points: h.iter().map(|p| (p.t, f(p))).collect(),
