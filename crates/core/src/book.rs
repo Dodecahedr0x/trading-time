@@ -33,6 +33,8 @@ pub struct Account {
     pub q: f64,
     /// Σ signed fill size × ln(fill price).
     pub cost: f64,
+    /// Total filled notional, either side.
+    pub volume: f64,
 }
 
 impl Account {
@@ -156,6 +158,7 @@ impl Book {
         for (who, sign) in [(buyer, 1.0), (seller, -1.0)] {
             let a = &mut self.accounts[who];
             a.q += sign * size;
+            a.volume += size;
             a.cost += sign * size * lp;
             if a.q.abs() < DUST {
                 // Realize the remaining equity at this fill price so it survives the reset.

@@ -1,6 +1,6 @@
 //! Step loop tying feed, oracle, band, pool and agents together.
 
-use crate::agents::{Action, Agent, AgentKind, AgentView, FastVol, Informed, Momentum, Noise};
+use crate::agents::{Action, Agent, AgentKind, AgentView, FastVol, Informed, Momentum, Noise, NoiseProfile};
 use crate::band::BandTracker;
 use crate::feed::PriceFeed;
 use crate::implied::{ImpliedConfig, ImpliedVol, blend_sigma};
@@ -116,6 +116,8 @@ pub struct Slot {
     pub kind: AgentKind,
     pub wallet: f64,
     pub initial: f64,
+    /// Notional opened plus closed.
+    pub volume: f64,
     agent: Option<Box<dyn Agent>>,
 }
 
@@ -146,6 +148,7 @@ pub struct Sim {
     pub liquidations: u64,
     pub adl: u64,
     pub trades: u64,
+    pub rejected: u64,
     pub max_skew_ratio: f64,
     pub skew_pnl: f64,
     gap_sum: f64,
@@ -163,14 +166,17 @@ impl Sim {
         vol.update(&first);
         let model = model_time_clamped(cfg.band_x, vol.sigma(), cfg.min_time, cfg.max_time);
 
-        let mut slots =
-            vec![Slot { kind: AgentKind::User, wallet: cfg.user_wallet, initial: cfg.user_wallet, agent: None }];
+        let mut slots = vec![Slot {
+            kind: AgentKind::User,
+            wallet: cfg.user_wallet,
+            initial: cfg.user_wallet,
+            volume: 0.0,
+            agent: None,
+        }];
         let mix = &cfg.agents;
+        let mut profiles = ChaCha8Rng::seed_from_u64(cfg.seed ^ crate::book_sim::PROFILE_SEED);
         let agents = (0..mix.noise)
-            .map(|_| {
-                Box::new(Noise { trade_prob: 0.01, close_prob: 0.005, max_collateral: 5_000.0, leverage: 3.0 })
-                    as Box<dyn Agent>
-            })
+            .map(|_| Box::new(Noise { profile: NoiseProfile::sample(&mut profiles) }) as Box<dyn Agent>)
             .chain((0..mix.informed).map(|_| {
                 let a = Informed { kind: AgentKind::Informed, threshold: 0.25, collateral_frac: 0.25, leverage: 3.0 };
                 Box::new(a) as Box<dyn Agent>
@@ -192,6 +198,7 @@ impl Sim {
             kind: a.kind(),
             wallet: cfg.agent_wallet,
             initial: cfg.agent_wallet,
+            volume: 0.0,
             agent: Some(a),
         }));
 
@@ -214,6 +221,7 @@ impl Sim {
             liquidations: 0,
             adl: 0,
             trades: 0,
+            rejected: 0,
             max_skew_ratio: 0.0,
             skew_pnl: 0.0,
             gap_sum: 0.0,
@@ -343,6 +351,7 @@ impl Sim {
                 match self.pool.open(owner, side, collateral, leverage, self.quote(), self.t) {
                     Ok(id) => {
                         self.slots[owner].wallet -= collateral;
+                        self.slots[owner].volume += self.pool.positions[&id].entry_notional();
                         self.trades += 1;
                         let p = &self.pool.positions[&id];
                         let (notional, price) = (p.entry_notional(), p.entry);
@@ -350,6 +359,7 @@ impl Sim {
                         Ok(id)
                     }
                     Err(e) => {
+                        self.rejected += 1;
                         self.push_event(EventKind::Rejected { owner, agent, reason: e.to_string() });
                         Err(e.to_string())
                     }
@@ -362,6 +372,7 @@ impl Sim {
                 let Settlement { position, payout, .. } =
                     self.pool.close(id, self.quote()).map_err(|e| e.to_string())?;
                 self.slots[owner].wallet += payout;
+                self.slots[owner].volume += position.entry_notional();
                 self.trades += 1;
                 let pnl = payout - position.collateral;
                 self.push_event(EventKind::Closed { owner, agent, payout, pnl });
@@ -424,14 +435,7 @@ impl Sim {
     pub fn summary(&self) -> Summary {
         let mut by_kind: Vec<KindPnl> = Vec::new();
         for (i, s) in self.slots.iter().enumerate() {
-            let pnl = self.net_worth(i) - s.initial;
-            match by_kind.iter_mut().find(|k| k.kind == s.kind) {
-                Some(k) => {
-                    k.agents += 1;
-                    k.pnl += pnl;
-                }
-                None => by_kind.push(KindPnl { kind: s.kind, agents: 1, pnl }),
-            }
+            KindPnl::add(&mut by_kind, s.kind, s.initial, self.net_worth(i), s.volume);
         }
         Summary {
             steps: self.steps,
@@ -445,6 +449,7 @@ impl Sim {
             liquidations: self.liquidations,
             adl: self.adl,
             trades: self.trades,
+            rejected: self.rejected,
             max_skew_ratio: self.max_skew_ratio,
             skew_pnl: self.skew_pnl,
             mean_gap: self.gap_sum / self.steps.max(1) as f64,

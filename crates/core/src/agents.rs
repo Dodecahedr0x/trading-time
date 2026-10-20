@@ -49,11 +49,53 @@ fn close_all(view: &AgentView) -> Vec<Action> {
 }
 
 /// Opens random-side positions and closes them after a random holding time.
-pub struct Noise {
-    pub trade_prob: f64,
+/// Retail behaviour, sampled once per trader so the population is heterogeneous.
+/// Rates assume one-minute bars. Sides are random: these traders have no edge.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NoiseProfile {
+    /// Chance of opening per bar while flat.
+    pub open_prob: f64,
+    /// Chance of closing per bar while in a position (absent stops).
     pub close_prob: f64,
-    pub max_collateral: f64,
     pub leverage: f64,
+    /// Fraction of equity posted per trade.
+    pub stake: f64,
+    /// Exit after losing this fraction of the stake.
+    pub stop_loss: f64,
+    /// Exit after gaining this multiple of the stake.
+    pub take_profit: f64,
+}
+
+impl NoiseProfile {
+    /// 0.2–2 trades a day, held 2 h–3 days, mostly 2–3× leverage, staking 10–50%
+    /// of equity, with a stop at −30–80% and a target at +30–150% of the stake.
+    pub fn sample(rng: &mut ChaCha8Rng) -> Self {
+        let mut log_uniform = |lo: f64, hi: f64| (lo.ln() + rng.random::<f64>() * (hi / lo).ln()).exp();
+        let trades_per_day = log_uniform(0.2, 2.0);
+        let hold_hours = log_uniform(2.0, 72.0);
+        Self {
+            open_prob: trades_per_day / 1_440.0,
+            close_prob: 1.0 / (hold_hours * 60.0),
+            leverage: [1.0, 2.0, 2.0, 3.0, 3.0, 5.0][rng.random_range(0..6)],
+            stake: rng.random_range(0.1..0.5),
+            stop_loss: rng.random_range(0.3..0.8),
+            take_profit: rng.random_range(0.3..1.5),
+        }
+    }
+
+    /// Whether to open a position this bar; returns the random side if so.
+    pub fn wants_open(&self, rng: &mut ChaCha8Rng) -> Option<Side> {
+        (rng.random::<f64>() < self.open_prob).then(|| if rng.random::<bool>() { Side::Long } else { Side::Short })
+    }
+
+    /// Whether to exit a position whose PnL is `pnl` on a stake of `stake`.
+    pub fn wants_close(&self, pnl: f64, stake: f64, rng: &mut ChaCha8Rng) -> bool {
+        pnl <= -self.stop_loss * stake || pnl >= self.take_profit * stake || rng.random::<f64>() < self.close_prob
+    }
+}
+
+pub struct Noise {
+    pub profile: NoiseProfile,
 }
 
 impl Agent for Noise {
@@ -62,15 +104,15 @@ impl Agent for Noise {
     }
 
     fn act(&mut self, view: &AgentView, rng: &mut ChaCha8Rng) -> Vec<Action> {
-        if view.positions.is_empty() {
-            if rng.random::<f64>() < self.trade_prob {
-                let side = if rng.random::<bool>() { Side::Long } else { Side::Short };
-                let collateral = rng.random_range(0.2..1.0) * self.max_collateral.min(view.wallet);
-                return vec![Action::Open { side, collateral, leverage: self.leverage }];
-            }
-            return vec![];
+        let pr = &self.profile;
+        match view.positions.first() {
+            None => match pr.wants_open(rng) {
+                Some(side) => vec![Action::Open { side, collateral: pr.stake * view.wallet, leverage: pr.leverage }],
+                None => vec![],
+            },
+            Some(p) if pr.wants_close(p.pnl(view.model), p.collateral, rng) => close_all(view),
+            Some(_) => vec![],
         }
-        if rng.random::<f64>() < self.close_prob { close_all(view) } else { vec![] }
     }
 }
 
@@ -195,6 +237,36 @@ mod tests {
 
     fn view(model: f64, true_model: Option<f64>, positions: &[Position]) -> AgentView<'_> {
         AgentView { t: 0.0, model, true_model, target: model, wallet: 1_000.0, positions }
+    }
+
+    #[test]
+    fn noise_profiles_are_heterogeneous_and_in_range() {
+        let mut rng = ChaCha8Rng::seed_from_u64(9);
+        let ps: Vec<NoiseProfile> = (0..200).map(|_| NoiseProfile::sample(&mut rng)).collect();
+        for p in &ps {
+            let per_day = p.open_prob * 1_440.0;
+            let hold_h = 1.0 / (p.close_prob * 60.0);
+            assert!((0.2..=2.0).contains(&per_day) && (2.0..=72.0).contains(&hold_h), "{p:?}");
+            assert!([1.0, 2.0, 3.0, 5.0].contains(&p.leverage));
+        }
+        assert!(ps.iter().any(|p| p.leverage == 1.0) && ps.iter().any(|p| p.leverage == 5.0));
+        assert_ne!(ps[0], ps[1]);
+    }
+
+    #[test]
+    fn noise_stops_out_and_takes_profit() {
+        let mut rng = ChaCha8Rng::seed_from_u64(0);
+        let p = NoiseProfile {
+            open_prob: 0.0,
+            close_prob: 0.0,
+            leverage: 2.0,
+            stake: 0.2,
+            stop_loss: 0.5,
+            take_profit: 1.0,
+        };
+        assert!(!p.wants_close(-40.0, 100.0, &mut rng));
+        assert!(p.wants_close(-50.0, 100.0, &mut rng));
+        assert!(p.wants_close(100.0, 100.0, &mut rng));
     }
 
     #[test]

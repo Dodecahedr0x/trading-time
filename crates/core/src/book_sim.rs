@@ -1,7 +1,7 @@
 //! Order-book venue simulation. Market makers quote, takers cross, and the
 //! realized-vol oracle is only the funding index rather than the trade price.
 
-use crate::agents::AgentKind;
+use crate::agents::{AgentKind, NoiseProfile};
 use crate::band::BandTracker;
 use crate::book::{Account, Book, BookConfig};
 use crate::feed::{Bar, PriceFeed};
@@ -10,7 +10,7 @@ use crate::oracle::{model_time_clamped, sigma_per_sec};
 use crate::pool::Side;
 use crate::vol::EwmaVol;
 use rand::seq::SliceRandom;
-use rand::{Rng, SeedableRng};
+use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -171,10 +171,15 @@ impl BookAgent for MarketMaker {
 
 /// Random market orders, closed after a random holding time.
 pub struct NoiseTaker {
-    pub trade_prob: f64,
-    pub close_prob: f64,
-    pub max_collateral: f64,
-    pub leverage: f64,
+    pub profile: NoiseProfile,
+    /// Equity and stake when the current position was opened.
+    entry: Option<(f64, f64)>,
+}
+
+impl NoiseTaker {
+    pub fn new(profile: NoiseProfile) -> Self {
+        Self { profile, entry: None }
+    }
 }
 
 impl BookAgent for NoiseTaker {
@@ -183,15 +188,16 @@ impl BookAgent for NoiseTaker {
     }
 
     fn act(&mut self, view: &BookView, rng: &mut ChaCha8Rng) -> Vec<BookAction> {
+        let pr = &self.profile;
         if view.account.q == 0.0 {
-            if rng.random::<f64>() < self.trade_prob {
-                let side = if rng.random::<bool>() { Side::Long } else { Side::Short };
-                let notional = rng.random_range(0.2..1.0) * self.max_collateral.min(view.equity) * self.leverage;
-                return vec![BookAction::Market { side, notional }];
-            }
-            return vec![];
+            self.entry = None;
+            let Some(side) = pr.wants_open(rng) else { return vec![] };
+            let stake = pr.stake * view.equity;
+            self.entry = Some((view.equity, stake));
+            return vec![BookAction::Market { side, notional: stake * pr.leverage }];
         }
-        if rng.random::<f64>() < self.close_prob { vec![BookAction::CloseAll] } else { vec![] }
+        let (equity0, stake) = self.entry.unwrap_or((view.equity, pr.stake * view.equity));
+        if pr.wants_close(view.equity - equity0, stake, rng) { vec![BookAction::CloseAll] } else { vec![] }
     }
 }
 
@@ -319,6 +325,9 @@ impl Default for BookSimConfig {
     }
 }
 
+/// Seeds noise-trader profiles separately from trading randomness.
+pub(crate) const PROFILE_SEED: u64 = 0x5EED_0F7E_7124_DE55;
+
 pub struct BookSim {
     pub cfg: BookSimConfig,
     feed: Box<dyn PriceFeed>,
@@ -362,11 +371,9 @@ impl BookSim {
             agents.push(Box::new(mm));
             initial.push(cfg.mm_wallet);
         }
+        let mut profiles = ChaCha8Rng::seed_from_u64(cfg.seed ^ PROFILE_SEED);
         let takers: Vec<Box<dyn BookAgent>> = (0..cfg.noise)
-            .map(|_| {
-                Box::new(NoiseTaker { trade_prob: 0.01, close_prob: 0.005, max_collateral: 5_000.0, leverage: 3.0 })
-                    as Box<dyn BookAgent>
-            })
+            .map(|_| Box::new(NoiseTaker::new(NoiseProfile::sample(&mut profiles))) as Box<dyn BookAgent>)
             .chain((0..cfg.informed).map(|_| {
                 Box::new(GapTaker {
                     kind: AgentKind::Informed,
@@ -536,14 +543,8 @@ impl BookSim {
     pub fn summary(&self) -> BookSummary {
         let mut by_kind: Vec<KindPnl> = Vec::new();
         for (i, a) in self.agents.iter().enumerate() {
-            let pnl = self.book.accounts[i].equity(self.mark) - self.initial[i];
-            match by_kind.iter_mut().find(|k| k.kind == a.kind()) {
-                Some(k) => {
-                    k.agents += 1;
-                    k.pnl += pnl;
-                }
-                None => by_kind.push(KindPnl { kind: a.kind(), agents: 1, pnl }),
-            }
+            let acct = &self.book.accounts[i];
+            KindPnl::add(&mut by_kind, a.kind(), self.initial[i], acct.equity(self.mark), acct.volume);
         }
         let bars = self.steps.saturating_sub(self.cfg.warmup_bars).max(1) as f64;
         BookSummary {
@@ -613,11 +614,7 @@ impl std::fmt::Display for BookSummary {
             100.0 * self.empty_frac
         )?;
         writeln!(f, "mid vs index   mean |gap| {:.2}%", 100.0 * self.mean_gap)?;
-        writeln!(f, "trader PnL by kind:")?;
-        for k in &self.by_kind {
-            writeln!(f, "  {:<12} n={:<3} {:+.2}", format!("{:?}", k.kind), k.agents, k.pnl)?;
-        }
-        Ok(())
+        KindPnl::write_table(f, &self.by_kind)
     }
 }
 

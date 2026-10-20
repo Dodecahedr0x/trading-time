@@ -31,6 +31,46 @@ pub struct KindPnl {
     pub agents: usize,
     /// Wallet plus open-position equity, minus starting wallet.
     pub pnl: f64,
+    /// Notional traded (opens plus closes; maker fills count for market makers).
+    pub volume: f64,
+    /// Agents left with under 1% of their starting capital.
+    pub wiped: usize,
+}
+
+impl KindPnl {
+    /// Adds one agent's result to the row for its kind.
+    pub fn add(rows: &mut Vec<KindPnl>, kind: AgentKind, initial: f64, worth: f64, volume: f64) {
+        let wiped = usize::from(worth < 0.01 * initial);
+        let pnl = worth - initial;
+        match rows.iter_mut().find(|k| k.kind == kind) {
+            Some(k) => {
+                k.agents += 1;
+                k.pnl += pnl;
+                k.volume += volume;
+                k.wiped += wiped;
+            }
+            None => rows.push(KindPnl { kind, agents: 1, pnl, volume, wiped }),
+        }
+    }
+
+    pub fn write_table(f: &mut std::fmt::Formatter<'_>, rows: &[KindPnl]) -> std::fmt::Result {
+        writeln!(f, "trader PnL by kind:          PnL      volume   PnL/volume  wiped")?;
+        for k in rows {
+            let bps = if k.volume > 0.0 { 1e4 * k.pnl / k.volume } else { 0.0 };
+            writeln!(
+                f,
+                "  {:<12} n={:<3} {:>+12.0} {:>11.0} {:>+9.1}bp  {}/{}",
+                format!("{:?}", k.kind),
+                k.agents,
+                k.pnl,
+                k.volume,
+                bps,
+                k.wiped,
+                k.agents
+            )?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -47,6 +87,8 @@ pub struct Summary {
     /// Positions reduced by auto-deleveraging.
     pub adl: u64,
     pub trades: u64,
+    /// Opens the pool refused (leverage, OI or skew caps, margin).
+    pub rejected: u64,
     /// Peak |long OI − short OI| / starting LP liquidity seen during the run.
     pub max_skew_ratio: f64,
     /// LP PnL from carrying net skew through mark moves: −Σ skew·Δln(mark).
@@ -68,7 +110,7 @@ impl std::fmt::Display for Summary {
         writeln!(f, "LP PnL         {:+.2} ({:+.2}%)", lp, 100.0 * lp / self.lp_start)?;
         writeln!(f, "fees           {:.2}", self.fees)?;
         writeln!(f, "bad debt       {:.2}", self.bad_debt)?;
-        writeln!(f, "trades         {}", self.trades)?;
+        writeln!(f, "trades         {} ({} opens rejected)", self.trades, self.rejected)?;
         writeln!(f, "liquidations   {}", self.liquidations)?;
         writeln!(f, "ADL reductions {}", self.adl)?;
         writeln!(f, "max skew/LP0   {:.3}", self.max_skew_ratio)?;
@@ -79,10 +121,6 @@ impl std::fmt::Display for Summary {
             100.0 * self.mean_gap,
             100.0 * self.wide_gap_frac
         )?;
-        writeln!(f, "trader PnL by kind:")?;
-        for k in &self.by_kind {
-            writeln!(f, "  {:<10} n={:<3} {:+.2}", format!("{:?}", k.kind), k.agents, k.pnl)?;
-        }
-        Ok(())
+        KindPnl::write_table(f, &self.by_kind)
     }
 }
