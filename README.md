@@ -10,7 +10,9 @@ an LP pool; the realized hitting-time index is tracked to check calibration.
 
 Two venues: an LP pool that takes the other side at the oracle price (`engine.rs`),
 and a central limit order book where market makers quote and the oracle is only the
-funding index (`book.rs`, `book_sim.rs`; CLI `--venue book`).
+funding index (`book.rs`, `book_sim.rs`; CLI `--venue book`). `--index-hl` sets the
+oracle/index half-life; a slow index (e.g. 7 days) makes fair value forecastable and
+is what keeps spreads tight on real SOL data.
 
 ```
 crates/core   simulator library (feeds, band, vol, oracle, pool, book, agents, engines)

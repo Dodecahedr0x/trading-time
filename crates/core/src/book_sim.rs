@@ -24,12 +24,38 @@ pub enum BookAction {
     CloseAll,
 }
 
+/// Prices the perp as the funding index expected one funding horizon ahead.
+///
+/// The index is an EWMA of variance, so from the current index variance it
+/// decays toward the variance running now: v(h) = v_now + (v_index − v_now)·2^(−h/half_life).
+#[derive(Clone, Copy, Debug)]
+pub struct Forecaster {
+    pub band_x: f64,
+    pub min_time: f64,
+    pub max_time: f64,
+    pub index_sigma: f64,
+    pub index_half_life: f64,
+    /// Funding horizon in seconds (1 / funding_k).
+    pub horizon: f64,
+}
+
+impl Forecaster {
+    /// Expected index (seconds) one horizon ahead if volatility stays at `sigma_now`.
+    pub fn time(&self, sigma_now: f64) -> f64 {
+        let (now, index) = (sigma_now * sigma_now, self.index_sigma * self.index_sigma);
+        let var = now + (index - now) * 0.5f64.powf(self.horizon / self.index_half_life);
+        model_time_clamped(self.band_x, var.sqrt(), self.min_time, self.max_time)
+    }
+}
+
 pub struct BookView<'a> {
     /// Oracle model price (funding index).
     pub index: f64,
+    pub forecast: Forecaster,
     /// Book mid, or the index when a side is empty.
     pub mark: f64,
-    pub true_model: Option<f64>,
+    /// The feed's true volatility, on synthetic feeds.
+    pub true_sigma: Option<f64>,
     pub account: &'a Account,
     pub equity: f64,
 }
@@ -62,14 +88,17 @@ impl Estimator {
     pub fn model(&self) -> f64 {
         model_time_clamped(self.band_x, self.vol.sigma(), self.min, self.max)
     }
+
+    pub fn sigma(&self) -> f64 {
+        self.vol.sigma()
+    }
 }
 
-/// Quotes a ladder around a blend of the index and its own estimate, shifted
-/// against its inventory, with a half-spread that widens after fast moves.
+/// Quotes a ladder around its forecast of the index (from its own vol estimate),
+/// shifted against its inventory, with a half-spread that widens after fast moves.
 /// Stops quoting the side that would take inventory past `inventory_limit`.
 pub struct MarketMaker {
     pub est: Estimator,
-    pub index_weight: f64,
     pub half_spread: f64,
     pub levels: usize,
     pub step: f64,
@@ -87,7 +116,6 @@ impl MarketMaker {
     pub fn new(est: Estimator, half_spread: f64, size: f64, inventory_limit: f64) -> Self {
         Self {
             est,
-            index_weight: 0.5,
             half_spread,
             levels: 3,
             step: 0.005,
@@ -112,7 +140,7 @@ impl BookAgent for MarketMaker {
     }
 
     fn act(&mut self, view: &BookView, _rng: &mut ChaCha8Rng) -> Vec<BookAction> {
-        let fair = self.index_weight * view.index.ln() + (1.0 - self.index_weight) * self.est.model().ln();
+        let fair = view.forecast.time(self.est.sigma()).ln();
         if let Some(last) = self.last {
             self.move_ema += 0.05 * ((fair - last).abs() - self.move_ema);
         }
@@ -167,8 +195,8 @@ impl BookAgent for NoiseTaker {
     }
 }
 
-/// Trades the mark toward a reference: its own fast estimate (`FastVol`) or the
-/// feed's true model (`Informed`, synthetic feeds only).
+/// Trades the mark toward the index forecast from its own fast estimate
+/// (`FastVol`) or from the feed's true volatility (`Informed`, synthetic only).
 pub struct GapTaker {
     pub kind: AgentKind,
     pub est: Option<Estimator>,
@@ -189,13 +217,12 @@ impl BookAgent for GapTaker {
     }
 
     fn act(&mut self, view: &BookView, _rng: &mut ChaCha8Rng) -> Vec<BookAction> {
-        let reference = match &self.est {
-            Some(e) => e.model(),
-            None => match view.true_model {
-                Some(t) => t,
-                None => return vec![],
-            },
+        let sigma = match (&self.est, view.true_sigma) {
+            (Some(e), _) => e.sigma(),
+            (None, Some(s)) => s,
+            (None, None) => return vec![],
         };
+        let reference = view.forecast.time(sigma);
         let gap = (reference / view.mark).ln();
         let q = view.account.q;
         if q == 0.0 && gap.abs() > self.threshold {
@@ -236,9 +263,9 @@ impl BookAgent for MomentumTaker {
     }
 }
 
-fn view(book: &Book, i: usize, index: f64, mark: f64, true_model: Option<f64>) -> BookView<'_> {
+fn view(book: &Book, i: usize, index: f64, mark: f64, forecast: Forecaster, true_sigma: Option<f64>) -> BookView<'_> {
     let account = &book.accounts[i];
-    BookView { index, mark, true_model, account, equity: account.equity(mark) }
+    BookView { index, forecast, mark, true_sigma, account, equity: account.equity(mark) }
 }
 
 #[derive(Clone, Debug)]
@@ -437,12 +464,17 @@ impl BookSim {
             return true;
         }
 
-        let true_model = self
-            .feed
-            .true_sigma()
-            .map(|s| model_time_clamped(self.cfg.band_x, s, self.cfg.min_time, self.cfg.max_time));
+        let true_sigma = self.feed.true_sigma();
+        let forecast = Forecaster {
+            band_x: self.cfg.band_x,
+            min_time: self.cfg.min_time,
+            max_time: self.cfg.max_time,
+            index_sigma: self.vol.sigma(),
+            index_half_life: self.cfg.ewma_half_life,
+            horizon: 1.0 / self.cfg.book.funding_k,
+        };
         for i in 0..self.cfg.mm {
-            let view = view(&self.book, i, self.index, self.mark, true_model);
+            let view = view(&self.book, i, self.index, self.mark, forecast, true_sigma);
             let actions = self.agents[i].act(&view, &mut self.rng);
             let mark = self.mark;
             for a in actions {
@@ -462,7 +494,7 @@ impl BookSim {
         let mut order: Vec<usize> = (self.cfg.mm..self.agents.len()).collect();
         order.shuffle(&mut self.rng);
         for i in order {
-            let view = view(&self.book, i, self.index, self.mark, true_model);
+            let view = view(&self.book, i, self.index, self.mark, forecast, true_sigma);
             let actions = self.agents[i].act(&view, &mut self.rng);
             for a in actions {
                 self.execute(i, a);
@@ -597,6 +629,25 @@ mod tests {
     fn sim(seed: u64) -> BookSim {
         let feed = SynthFeed::new(Model::Gbm { sigma: sigma_per_sec(0.8) }, seed, 150.0, 60.0);
         BookSim::new(BookSimConfig { seed, ..Default::default() }, Box::new(feed)).unwrap()
+    }
+
+    #[test]
+    fn forecast_moves_from_index_toward_current_vol() {
+        let fc = |hl: f64| Forecaster {
+            band_x: 0.01,
+            min_time: 1.0,
+            max_time: 1e9,
+            index_sigma: 1e-4,
+            index_half_life: hl,
+            horizon: 86_400.0,
+        };
+        let index_time = model_time_clamped(0.01, 1e-4, 1.0, 1e9);
+        // Vol unchanged: forecast is the index.
+        assert!((fc(86_400.0).time(1e-4) / index_time - 1.0).abs() < 1e-12);
+        // Vol doubled: a 1-day half-life moves halfway in variance (1 → 2.5), a 7-day one barely.
+        assert!((fc(86_400.0).time(2e-4) / index_time - 1.0 / 2.5).abs() < 1e-9);
+        let slow = fc(7.0 * 86_400.0).time(2e-4) / index_time;
+        assert!(slow > 0.75 && slow < 0.85, "{slow}");
     }
 
     #[test]
