@@ -218,6 +218,62 @@ impl BookAgent for MarketMaker {
     }
 }
 
+/// Proprietary AMM (HumidiFi/SolFi style): one operator's own capital quoted as a
+/// pricing curve around its fair value, refreshed every bar. The marginal price
+/// for the x-th dollar on a side is `fair ± (half_spread + impact · x)`, skewed
+/// against inventory, out to the inventory limit. The curve is posted as a fine
+/// ladder, so walking several operators' curves by best marginal price is the
+/// same as an aggregator splitting an order across them.
+pub struct PropAmm {
+    pub est: Estimator,
+    pub half_spread: f64,
+    /// ln-price added per USD of size along the curve.
+    pub impact: f64,
+    pub inventory_limit: f64,
+    /// USD per ladder step (curve resolution).
+    pub step: f64,
+}
+
+impl BookAgent for PropAmm {
+    fn kind(&self) -> AgentKind {
+        AgentKind::PropAmm
+    }
+
+    fn observe(&mut self, bar: &Bar) {
+        self.est.update(bar);
+    }
+
+    fn act(&mut self, view: &BookView, _rng: &mut ChaCha8Rng) -> Vec<BookAction> {
+        if view.equity <= 0.0 {
+            return vec![BookAction::Quotes(vec![])];
+        }
+        let q = view.account.q;
+        // Inventory skew: at the limit the center moves by the curve's full depth on that side.
+        let center = view.forecast.time(self.est.sigma()).ln() - self.impact * q;
+        let mut quotes = Vec::new();
+        for (side, room) in [(Side::Long, self.inventory_limit - q), (Side::Short, self.inventory_limit + q)] {
+            let mut x = 0.0;
+            while x + 1e-9 < room {
+                let size = self.step.min(room - x);
+                let off = self.half_spread + self.impact * (x + size / 2.0);
+                quotes.push((side, (center - side.sign() * off).exp(), size));
+                x += size;
+            }
+        }
+        vec![BookAction::Quotes(quotes)]
+    }
+
+    fn describe(&self) -> Option<String> {
+        Some(format!(
+            "propAMM est {:>3.0}m half-spread {:.2}% impact {:.2}%/10k inv ±{:.0}k",
+            self.est.vol.half_life() / 60.0,
+            100.0 * self.half_spread,
+            100.0 * self.impact * 10_000.0,
+            self.inventory_limit / 1_000.0
+        ))
+    }
+}
+
 /// Random market orders, closed after a random holding time.
 pub struct NoiseTaker {
     pub profile: NoiseProfile,
@@ -342,6 +398,16 @@ pub struct BookSimConfig {
     pub mm_adaptive: bool,
     /// Starting (or, without adaptation, fixed) spread multiplier.
     pub mm_scale: f64,
+    /// Proprietary AMM operators (quote after the ladder makers).
+    pub prop: usize,
+    pub prop_wallet: f64,
+    pub prop_half_spread: f64,
+    /// ln-price per USD of size along each curve.
+    pub prop_impact: f64,
+    pub prop_inventory_limit: f64,
+    /// Quotes refresh after takers act on each bar, so takers trade against
+    /// the previous bar's quotes (a CLOB maker without update priority).
+    pub maker_lag: bool,
     pub noise: usize,
     pub informed: usize,
     pub fast: usize,
@@ -369,6 +435,12 @@ impl Default for BookSimConfig {
             mm_half_life: 900.0,
             mm_adaptive: true,
             mm_scale: 1.0,
+            prop: 0,
+            prop_wallet: 600_000.0,
+            prop_half_spread: 0.002,
+            prop_impact: 0.005 / 10_000.0,
+            prop_inventory_limit: 60_000.0,
+            maker_lag: false,
             noise: 20,
             informed: 2,
             fast: 2,
@@ -408,6 +480,9 @@ pub struct BookSim {
     empty_bars: u64,
     gap_sum: f64,
     initial_value: f64,
+    /// Per agent: spread, impact and fees paid against the pre-trade mark, and the volume it was paid on.
+    exec_cost: Vec<f64>,
+    exec_volume: Vec<f64>,
 }
 
 impl BookSim {
@@ -427,6 +502,16 @@ impl BookSim {
             mm.scale = cfg.mm_scale;
             agents.push(Box::new(mm));
             initial.push(cfg.mm_wallet);
+        }
+        for _ in 0..cfg.prop {
+            agents.push(Box::new(PropAmm {
+                est: Estimator::new(cfg.mm_half_life, &cfg),
+                half_spread: cfg.prop_half_spread,
+                impact: cfg.prop_impact,
+                inventory_limit: cfg.prop_inventory_limit,
+                step: 2_000.0,
+            }));
+            initial.push(cfg.prop_wallet);
         }
         let mut profiles = ChaCha8Rng::seed_from_u64(cfg.seed ^ PROFILE_SEED);
         let takers: Vec<Box<dyn BookAgent>> = (0..cfg.noise)
@@ -485,6 +570,8 @@ impl BookSim {
             empty_bars: 0,
             gap_sum: 0.0,
             initial_value,
+            exec_cost: vec![0.0; initial.len()],
+            exec_volume: vec![0.0; initial.len()],
             cfg,
             feed,
             vol,
@@ -537,25 +624,16 @@ impl BookSim {
             index_half_life: self.cfg.ewma_half_life,
             horizon: 1.0 / self.cfg.book.funding_k,
         };
-        for i in 0..self.cfg.mm {
-            let view = view(&self.book, i, self.index, self.mark, forecast, true_sigma);
-            let actions = self.agents[i].act(&view, &mut self.rng);
-            let mark = self.mark;
-            for a in actions {
-                if let BookAction::Quotes(q) = a {
-                    self.book.replace_quotes(i, &q, mark);
-                }
-            }
+        if !self.cfg.maker_lag {
+            self.requote(forecast, true_sigma);
         }
-        self.refresh_mark();
-
         for l in self.book.liquidate_all(self.mark) {
             self.liquidations += 1;
             self.adl_liquidations += u64::from(l.adl > 0.0);
         }
         self.refresh_mark();
 
-        let mut order: Vec<usize> = (self.cfg.mm..self.agents.len()).collect();
+        let mut order: Vec<usize> = (self.quoters()..self.agents.len()).collect();
         order.shuffle(&mut self.rng);
         for i in order {
             let view = view(&self.book, i, self.index, self.mark, forecast, true_sigma);
@@ -563,6 +641,9 @@ impl BookSim {
             for a in actions {
                 self.execute(i, a);
             }
+        }
+        if self.cfg.maker_lag {
+            self.requote(forecast, true_sigma);
         }
         self.refresh_mark();
 
@@ -576,6 +657,25 @@ impl BookSim {
         self.gap_sum += (self.mark / self.index).ln().abs();
         debug_assert!((self.book.total_value() - self.initial_value).abs() < 1e-6 * self.initial_value);
         true
+    }
+
+    /// Agents that post quotes: ladder makers, then prop AMMs.
+    fn quoters(&self) -> usize {
+        self.cfg.mm + self.cfg.prop
+    }
+
+    fn requote(&mut self, forecast: Forecaster, true_sigma: Option<f64>) {
+        for i in 0..self.quoters() {
+            let view = view(&self.book, i, self.index, self.mark, forecast, true_sigma);
+            let actions = self.agents[i].act(&view, &mut self.rng);
+            let mark = self.mark;
+            for a in actions {
+                if let BookAction::Quotes(q) = a {
+                    self.book.replace_quotes(i, &q, mark);
+                }
+            }
+        }
+        self.refresh_mark();
     }
 
     fn execute(&mut self, owner: usize, action: BookAction) {
@@ -594,13 +694,27 @@ impl BookSim {
             return;
         }
         let limit = self.mark * (side.sign() * self.cfg.slippage).exp();
-        self.book.market(owner, side, size, limit, self.cfg.book.taker_fee);
+        let fill = self.book.market_fills(owner, side, size, limit, self.cfg.book.taker_fee);
+        // Cost against the pre-trade mark: spread and impact paid, plus the fee.
+        self.exec_cost[owner] +=
+            side.sign() * (fill.ln_notional - fill.size * self.mark.ln()) + self.cfg.book.taker_fee * fill.size;
+        self.exec_volume[owner] += fill.size;
     }
 
     pub fn summary(&self) -> BookSummary {
         let mut by_kind: Vec<KindPnl> = Vec::new();
         let mut makers = Vec::new();
+        let mut exec: Vec<(AgentKind, f64, f64)> = Vec::new();
         for (i, a) in self.agents.iter().enumerate() {
+            if self.exec_volume[i] > 0.0 {
+                match exec.iter_mut().find(|e| e.0 == a.kind()) {
+                    Some(e) => {
+                        e.1 += self.exec_cost[i];
+                        e.2 += self.exec_volume[i];
+                    }
+                    None => exec.push((a.kind(), self.exec_cost[i], self.exec_volume[i])),
+                }
+            }
             let acct = &self.book.accounts[i];
             KindPnl::add(&mut by_kind, a.kind(), self.initial[i], acct.equity(self.mark), acct.volume);
             if let Some(desc) = a.describe() {
@@ -626,6 +740,7 @@ impl BookSim {
             mean_gap: self.gap_sum / bars,
             by_kind,
             makers,
+            exec,
         }
     }
 }
@@ -653,6 +768,8 @@ pub struct BookSummary {
     pub by_kind: Vec<KindPnl>,
     /// Per market maker: state, PnL, volume.
     pub makers: Vec<(String, f64, f64)>,
+    /// Per taker kind: execution cost vs the pre-trade mark (USD) and taker volume.
+    pub exec: Vec<(AgentKind, f64, f64)>,
 }
 
 impl std::fmt::Display for BookSummary {
@@ -679,6 +796,10 @@ impl std::fmt::Display for BookSummary {
         )?;
         writeln!(f, "mid vs index   mean |gap| {:.2}%", 100.0 * self.mean_gap)?;
         KindPnl::write_table(f, &self.by_kind)?;
+        writeln!(f, "execution cost vs mark (spread + impact + fee):")?;
+        for (kind, cost, volume) in &self.exec {
+            writeln!(f, "  {:<12} {:>+7.1}bp on {:>11.0}", format!("{kind:?}"), 1e4 * cost / volume, volume)?;
+        }
         writeln!(f, "market makers:")?;
         for (i, (desc, pnl, volume)) in self.makers.iter().enumerate() {
             writeln!(f, "  mm{i} {desc}  PnL {pnl:>+10.0}  volume {volume:>11.0}")?;
@@ -743,6 +864,54 @@ mod tests {
         // One −2k day after a +1k day: the average turns negative, so it widens back.
         run_day(&mut mm, 97_000.0);
         assert!((mm.scale - 1.0).abs() < 1e-12, "{}", mm.scale);
+    }
+
+    #[test]
+    fn prop_amm_curve_widens_with_size_and_skews_with_inventory() {
+        let cfg = BookSimConfig::default();
+        let mut amm = PropAmm {
+            est: Estimator::new(900.0, &cfg),
+            half_spread: 0.002,
+            impact: 0.005 / 10_000.0,
+            inventory_limit: 10_000.0,
+            step: 2_000.0,
+        };
+        let forecast = Forecaster {
+            band_x: 0.01,
+            min_time: 60.0,
+            max_time: 1e6,
+            index_sigma: cfg.init_sigma,
+            index_half_life: cfg.ewma_half_life,
+            horizon: 86_400.0,
+        };
+        let mut rng = ChaCha8Rng::seed_from_u64(0);
+        let quotes = |amm: &mut PropAmm, q: f64, rng: &mut ChaCha8Rng| {
+            let account = Account { q, ..Default::default() };
+            let view = BookView { index: 1.0, forecast, mark: 1.0, true_sigma: None, account: &account, equity: 1e6 };
+            match amm.act(&view, rng).pop() {
+                Some(BookAction::Quotes(q)) => q,
+                other => panic!("{other:?}"),
+            }
+        };
+        let flat = quotes(&mut amm, 0.0, &mut rng);
+        let fair = forecast.time(cfg.init_sigma).ln();
+        let asks: Vec<f64> = flat.iter().filter(|q| q.0 == Side::Short).map(|q| q.1.ln() - fair).collect();
+        assert_eq!(asks.len(), 5);
+        assert!((asks[0] - (0.002 + 0.005 * 0.1)).abs() < 1e-9, "first step priced at its midpoint size");
+        assert!(asks.windows(2).all(|w| w[1] > w[0]), "marginal price rises with size");
+        // Long 10k: no bids left, asks pulled toward fair to unload.
+        let long = quotes(&mut amm, 10_000.0, &mut rng);
+        assert!(long.iter().all(|q| q.0 == Side::Short));
+        assert!(long[0].1.ln() - fair < asks[0]);
+    }
+
+    #[test]
+    fn market_fills_reports_log_notional() {
+        let mut b = Book::new(BookConfig { taker_fee: 0.0, ..Default::default() }, &[1e6, 1e6]);
+        b.replace_quotes(0, &[(Side::Short, 100.0, 1_000.0), (Side::Short, 200.0, 1_000.0)], 100.0);
+        let f = b.market_fills(1, Side::Long, 1_500.0, 1e9, 0.0);
+        assert_eq!(f.size, 1_500.0);
+        assert!((f.ln_notional - (1_000.0 * 100f64.ln() + 500.0 * 200f64.ln())).abs() < 1e-9);
     }
 
     #[test]

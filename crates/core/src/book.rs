@@ -60,6 +60,14 @@ pub struct Order {
     pub size: f64,
 }
 
+/// What a market order filled.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fills {
+    pub size: f64,
+    /// Σ fill size × ln(fill price).
+    pub ln_notional: f64,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Liquidation {
     pub owner: usize,
@@ -173,6 +181,12 @@ impl Book {
     /// Market order for up to `size`, never filling beyond `limit`. Skips the taker's own quotes.
     /// Returns the filled size. `fee` is charged on filled notional.
     pub fn market(&mut self, owner: usize, side: Side, size: f64, limit: f64, fee: f64) -> f64 {
+        self.market_fills(owner, side, size, limit, fee).size
+    }
+
+    /// [`Book::market`], also returning Σ fill size × ln(fill price).
+    pub fn market_fills(&mut self, owner: usize, side: Side, size: f64, limit: f64, fee: f64) -> Fills {
+        let mut ln_notional = 0.0;
         let mut left = size;
         let mut i = 0;
         while left > DUST {
@@ -193,6 +207,7 @@ impl Book {
                 book.remove(i);
             }
             left -= fill;
+            ln_notional += fill * price.ln();
             if side == Side::Long {
                 self.trade(owner, maker, price, fill)
             } else {
@@ -203,7 +218,7 @@ impl Book {
         let charge = fee * filled;
         self.accounts[owner].cash -= charge;
         self.fees += charge;
-        filled
+        Fills { size: filled, ln_notional }
     }
 
     /// Funding for `dt` seconds: every account pays q·k·ln(mark/index)·dt. Nets to zero.

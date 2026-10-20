@@ -2,7 +2,8 @@
 //!
 //! cli [--feed gbm|regime|jump|csv] [--path file.csv] [--seed N] [--steps N] [--cap LOG_PER_MIN] [--worst-of 0|1] [--iv-weight W] [--iv-noise SD] [--iv-premium P] [--log 0|1] [--max-lev L] [--max-skew FRAC] [--lp USD] [--adl 0|1]
 //!     [--noise N] [--informed N] [--momentum N] [--chaser N] [--fast N] [--export out.csv]
-//!     [--venue pool|book] [--mm N] [--mm-inv USD] [--mm-hl SECS] [--index-hl SECS] [--mm-adapt 0|1] [--mm-scale X]   (book venue uses --max-lev and the agent counts; pool flags are ignored)
+//!     [--venue pool|book] [--mm N] [--mm-inv USD] [--mm-hl SECS] [--index-hl SECS] [--mm-adapt 0|1] [--mm-scale X]
+//!     [--prop N] [--prop-h HALF_SPREAD] [--prop-k LN_PER_10K] [--prop-inv USD] [--maker-lag 0|1]   (book venue uses --max-lev and the agent counts; pool flags are ignored)
 
 use timeperp::book_sim::{BookSim, BookSimConfig};
 use timeperp::engine::{Sim, SimConfig};
@@ -18,7 +19,7 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    const FLAGS: [&str; 27] = [
+    const FLAGS: [&str; 32] = [
         "--feed",
         "--path",
         "--seed",
@@ -45,6 +46,11 @@ fn run() -> Result<(), String> {
         "--index-hl",
         "--mm-adapt",
         "--mm-scale",
+        "--prop",
+        "--prop-h",
+        "--prop-k",
+        "--prop-inv",
+        "--maker-lag",
         "--export",
     ];
     if let Some(bad) = args.iter().step_by(2).find(|a| !FLAGS.contains(&a.as_str())) {
@@ -101,6 +107,17 @@ fn run() -> Result<(), String> {
         if let Some(scale) = float("--mm-scale")? {
             cfg.mm_scale = scale;
         }
+        cfg.prop = num("--prop", cfg.prop as u64)? as usize;
+        if let Some(h) = float("--prop-h")? {
+            cfg.prop_half_spread = h;
+        }
+        if let Some(k) = float("--prop-k")? {
+            cfg.prop_impact = k / 10_000.0;
+        }
+        if let Some(inv) = float("--prop-inv")? {
+            cfg.prop_inventory_limit = inv;
+        }
+        cfg.maker_lag = num("--maker-lag", 0)? != 0;
         cfg.noise = num("--noise", cfg.noise as u64)? as usize;
         cfg.informed = num("--informed", cfg.informed as u64)? as usize;
         cfg.momentum = num("--momentum", cfg.momentum as u64)? as usize;
