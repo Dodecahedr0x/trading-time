@@ -1,0 +1,17 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/cli", "crates/app"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+
+[workspace.dependencies]
+timeperp = { path = "crates/core" }
+rand = "0.9"
+rand_chacha = "0.9"
+rand_distr = "0.5"
+
+# Monte-Carlo tests are slow unoptimized.
+[profile.test]
+opt-level = 2
