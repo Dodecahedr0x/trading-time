@@ -28,3 +28,5 @@ cargo run -p app
 
 CSV input: `ts,open,high,low,close[,...]` (headers skipped, ms timestamps detected — Binance klines work as-is).
 `data/sample.csv` is a synthetic 7-day regime-switching path (`cli --export`).
+
+Design rationale and findings: [docs/design.md](docs/design.md).
