@@ -12,9 +12,11 @@ quoted in seconds.
 
 **Recommendation.** Build it as:
 
-- a **central limit order book** (market makers quote, traders take each other's sides),
+- **competing proprietary AMMs (propAMMs) behind an aggregator**: a few operators each quote
+  an inventory-linked pricing curve from their own capital, refreshed every slot with
+  update priority,
 - referencing a **slow realized-volatility index** (7-day EWMA of variance, expressed as
-  expected time-to-move), tied to the book only through **funding**,
+  expected time-to-move), tied to the venue only through **funding**,
 - with **log-time PnL**, a **~1× maximum leverage**, and **liquidation into the book down to
   the bankruptcy price, then auto-deleveraging (ADL)**, so no bad debt is possible.
 
@@ -24,9 +26,11 @@ never observed, only estimated from noisy data, and on SOL that estimate swings 
 days. Whoever quotes it, whether an LP pool or market makers, must charge 3–20% spreads for
 that noise or be drained by faster estimators. A slow index makes fair value forecastable
 and brings costs down to vol-market levels (0.5–1.5% spreads, 27–93bp of volume to retail).
+Competing propAMMs go further: 8–28bp to retail, operators still profitable, and the
+public-data arbitrageur shut out (§4.10).
 
-**What is still open.** Market-maker bootstrapping, oracle design for the index on-chain,
-and retail outcomes: even at low cost, most leveraged retail traders lose at least half
+**What is still open.** Whether operators can reliably land curve updates before takers,
+oracle design for the index on-chain, and retail outcomes: even at low cost, most leveraged retail traders lose at least half
 their capital in a year on this instrument.
 
 ## 2. The product
@@ -205,6 +209,44 @@ Venue-wide maximum leverage, 7-day index:
 - **The pool's LP needs leveraged retail fees and loses money at ≤2× leverage,** a
   structural conflict with protecting retail. The book stays profitable for makers at 1×.
 
+### 4.10 PropAMMs: update priority, size impact and competition
+
+A propAMM (HumidiFi/SolFi style) is one operator's capital quoted as a curve: the marginal
+price for the x-th dollar is `fair ± (half-spread + impact · x)`, and the whole curve shifts
+against the operator's inventory. It refreshes every bar before takers act. Posted as a fine
+ladder, several operators' curves are walked by best marginal price, which is what an
+aggregator does when it splits an order. A stale mode refreshes quotes after takers act.
+
+Real SOL, 7-day index, 60 retail traders, 1× leverage, 5 seeds:
+
+| Setup | House | Spread | Retail cost | FastVol |
+|---|---|---|---|---|
+| Ladder makers ×6 (§4.8 design) | +$207k | 0.84% | 69bp | +$567k |
+| Ladder makers ×6, stale | −$1.13M | 0.92% | 47bp | +$2.01M |
+| propAMM ×1, 0.2% half-spread, 0.5% impact per $10k | +$717k | 0.51% | 52bp | shut out |
+| propAMM ×1, stale | −$600k (wiped) | 0.50% | 39bp | +$1.16M |
+| propAMM ×1, nearly flat curve (0.05% per $10k) | +$31k | 0.41% | 8bp | +$328k |
+| propAMM ×1, 30-min estimator | +$177k | 0.51% | 41bp | +$399k |
+| propAMM ×1, 60-min estimator | −$265k | 0.51% | 29bp | +$860k |
+| propAMM ×1, 0.4% half-spread (monopoly pricing) | +$845k | 0.91% | 71bp | shut out |
+| propAMM ×3, 0.05% / 0.25% per $10k | +$374k | 0.12% | 28bp | shut out |
+| propAMM ×3, 0.02% / 0.1% per $10k | +$354k | 0.05% | 8bp | shut out |
+
+Retail cost here is execution cost (spread + impact + fee against the pre-trade mark), which
+separates trading costs from market moves.
+
+1. **Update priority matters most.** Quotes one minute stale turn every maker setup from
+   profit to ruin. On Solana this means cheap, prioritized curve-update transactions.
+2. **The operator still needs the fastest vol estimate.** Slower estimators lose to FastVol.
+3. **Size-dependent impact blocks the arbitrageur.** Its large trades stop paying. Because
+   the curve shifts with inventory, splitting an order across bars does not escape the
+   impact. Larger retail trades pay it too.
+4. **Competition is what makes it cheap.** One operator earns most at wide settings; three
+   competing operators at tight settings still earn about 20% a year on $600k each.
+
+Retail still loses $380–700k a year in total and about 35% are wiped out, from volatility
+and turnover rather than costs.
+
 ## 5. Recommended design
 
 ### 5.1 Contract
@@ -218,15 +260,20 @@ Venue-wide maximum leverage, 7-day index:
 | Index bounds | 60 s – 7 days | numerical safety |
 | PnL | log-time: `q · Δln(price)` | symmetric payoff, §4.3 |
 | Funding | continuous, `q · k · ln(mark / index)`, k = 1/day | anchors the book to the index |
-| Mark price | book mid; index if one side is empty | |
+| Mark price | best-bid/best-offer mid across operators; index if one side is empty | |
 
-### 5.2 Venue: CLOB
+### 5.2 Venue: competing propAMMs
 
-- Price-time priority, makers post ladders; takers send market orders with slippage limits.
-- Taker fee 5bp; maker fee 0.
-- Recommended launch with **designated market makers** under quoting obligations (max spread,
-  minimum size) until organic flow is large enough: §4.8 shows spreads depend on retail
-  volume, and §4.6 shows a thin or slow maker set collapses.
+- **Operators:** at least three, each quoting its own capital as an inventory-linked curve,
+  `fair ± (half-spread + impact · size)`, with the center shifted by `impact · inventory`.
+- **Updates:** every slot, before takers, with priority (§4.10). Operators price from a fast
+  vol estimate (15 minutes or faster on 1-minute bars).
+- **Routing:** an aggregator splits each taker order across curves by best marginal price,
+  with a slippage limit. Taker fee 5bp.
+- **Starting parameters:** half-spread 0.02–0.05%, impact 0.1–0.25% per $10k, inventory limit
+  about 10% of operator capital. Competition, not the protocol, should set the final values.
+- **Fallback:** a plain order book with designated makers (§4.8) if operators cannot get
+  reliable update priority.
 
 ### 5.3 Risk
 
@@ -234,7 +281,7 @@ Venue-wide maximum leverage, 7-day index:
 |---|---|
 | Max leverage | 1× at launch (§4.9); revisit with real flow data |
 | Maintenance margin | 5% of \|q\| |
-| Liquidation | market order into the book with limit = bankruptcy price; remainder auto-deleveraged pro rata against opposite positions at that price |
+| Liquidation | market order across operator curves with limit = bankruptcy price; remainder auto-deleveraged pro rata against opposite positions at that price |
 | Liquidation fee | 1% of closed notional → insurance fund |
 | Bad debt | impossible by construction (ADL at bankruptcy price); ADL shortfall is tracked |
 
@@ -251,19 +298,24 @@ version is not tradeable at reasonable cost.
    prices, not OHLC bars, so a keeper must aggregate updates into bars, or the index must
    use a different estimator. The index must be manipulation-resistant; a 7-day EWMA helps,
    but bar construction is an attack surface.
-2. **Market-maker bootstrapping.** Spreads depend on retail volume; early liquidity needs
-   designated makers or incentives.
-3. **Informed flow.** FastVol earned $300–700k a year at every book setting. Better
-   estimators than mine exist (tick data, multi-venue, options-implied), so real informed
-   flow may be stronger.
-4. **Retail outcomes.** Even at 27bp cost, 38–50% of simulated retail traders were wiped
+2. **Update priority.** The propAMM result depends on operators landing curve updates before
+   takers in every slot. Stale quotes cost operators everything in simulation.
+3. **Operator competition.** One operator maximizes profit at wide spreads (0.91%, 71bp to
+   retail). Retail costs are only low if several operators compete for aggregator flow.
+4. **Informed flow.** On ladder books FastVol earned $300–700k a year; propAMM impact shut it
+   out. Real arbitrageurs are smarter (tick data, multi-venue, options-implied vol, watching
+   flow), so the protection from impact may be weaker in practice.
+5. **Retail outcomes.** Even at 27bp cost, 38–50% of simulated retail traders were wiped
    out in a year at default leverage. Product risk should be disclosed; leverage and
    turnover limits are the levers.
-5. **Simulation limits.**
+6. **Simulation limits.**
    - One real price path (one year): seeds only vary agent behaviour.
    - Agents are scripted, not adaptive (except maker spreads).
    - All makers share one fair-value model, which likely overstates maker profits.
-   - No latency or transaction ordering.
+   - Latency is modelled only as whole-bar staleness (`--maker-lag`), not per slot.
+   - PropAMM parameters are fixed per run, not set by adaptive competition.
+   - Execution cost is measured against the mark, which falls back to the index when one
+     side is empty, so single-operator runs are noisier.
    - The pool's borrow rate (0.86%/day) is high and dominates pool retail costs.
    - The Informed agent is omniscient, an upper bound on informed flow.
 
@@ -273,14 +325,14 @@ version is not tradeable at reasonable cost.
 |---|---|
 | `Market` | parameters, funding index, insurance balance, fees |
 | `IndexState` | current bar (open/high/low), EWMA variance, last update slot |
-| `OrderBook` | bids/asks in a slab, Phoenix/OpenBook style, ln-price ticks |
+| `Operator` | curve parameters (fair, half-spread, impact, inventory limit), last update slot |
 | `Trader` | cash, q, cost basis, funding snapshot, open order IDs |
 
 | Instruction | Notes |
 |---|---|
 | `deposit` / `withdraw` | withdraw checks initial margin at mark |
-| `place_order` / `cancel` | makers; margin-trimmed like `Book::replace_quotes` |
-| `market_order` | takers; slippage limit |
+| `update_curve` | operator-only, small and cheap so it can land every slot; sets fair and parameters |
+| `swap` | takers via the aggregator; fills against one or more operator curves; slippage limit |
 | `crank_index` | permissionless; folds Pyth updates into the bar, rolls bars, updates EWMA |
 | `crank_funding` | permissionless; accrues `k · ln(mark/index) · dt` into the funding index |
 | `liquidate` | permissionless; book fill to bankruptcy price, then ADL over a provided counterparty list |
@@ -289,8 +341,10 @@ version is not tradeable at reasonable cost.
   Use a lookup-table or polynomial `ln`/`exp` in Q64.64.
 - **ADL.** Pro rata over *all* opposite accounts does not fit in one transaction; production
   ADL should rank by profit × leverage and take counterparties from a crank-maintained queue.
-- **Reference implementation.** `crates/core/src/book.rs` (matching, accounts, funding,
-  liquidation, ADL) is the logic to port; its invariants (Σq = 0, value conservation, no
+- **Curves, not order slabs.** Each operator's curve is evaluated in closed form at swap time,
+  instead of storing a ladder; the simulator's fine ladder is only a stand-in.
+- **Reference implementation.** `crates/core/src/book.rs` (accounts, funding, liquidation,
+  ADL) and `PropAmm` in `book_sim.rs` are the logic to port; its invariants (Σq = 0, value conservation, no
   negative equity after liquidation) should become on-chain property tests.
 
 ## 8. Reproducing the results
@@ -305,9 +359,11 @@ cargo run --release -p cli -- --feed csv --path $D --steps 600000 --log 1 --adl 
 cargo run --release -p cli -- --feed csv --path $D --steps 600000 --index-hl 604800 --log 1 --adl 1 --max-skew 0.02 --worst-of 0
 # book, 7d index, fixed spread multiplier, 60 retail traders, 1x leverage
 cargo run --release -p cli -- --venue book --feed csv --path $D --steps 600000 --index-hl 604800 --mm-adapt 0 --mm-scale 1 --noise 60 --max-lev 1
+# competing propAMMs, 7d index, 60 retail traders, 1x leverage (add --maker-lag 1 for stale quotes)
+cargo run --release -p cli -- --venue book --feed csv --path $D --steps 600000 --index-hl 604800 --mm 0 --prop 3 --prop-h 0.0002 --prop-k 0.001 --noise 60 --max-lev 1
 # synthetic paths: --feed gbm | regime | jump, vary --seed
 ```
 
 Commit history follows the sequence of §4: `6261da8` (pool and mitigations) → `fbc03f1`
 (order book) → `c491a6f` (slow index) → `aedd00b` (realistic retail) → `41552d4` (competing
-makers) → `1af9da8` (leverage metrics).
+makers) → `1af9da8` (leverage metrics) → `a2e1e1e` (propAMMs, stale quotes, execution cost).
