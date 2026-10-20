@@ -35,12 +35,15 @@ pub struct KindPnl {
     pub volume: f64,
     /// Agents left with under 1% of their starting capital.
     pub wiped: usize,
+    /// Agents that lost at least half their starting capital (including wiped).
+    pub halved: usize,
 }
 
 impl KindPnl {
     /// Adds one agent's result to the row for its kind.
     pub fn add(rows: &mut Vec<KindPnl>, kind: AgentKind, initial: f64, worth: f64, volume: f64) {
         let wiped = usize::from(worth < 0.01 * initial);
+        let halved = usize::from(worth <= 0.5 * initial);
         let pnl = worth - initial;
         match rows.iter_mut().find(|k| k.kind == kind) {
             Some(k) => {
@@ -48,24 +51,27 @@ impl KindPnl {
                 k.pnl += pnl;
                 k.volume += volume;
                 k.wiped += wiped;
+                k.halved += halved;
             }
-            None => rows.push(KindPnl { kind, agents: 1, pnl, volume, wiped }),
+            None => rows.push(KindPnl { kind, agents: 1, pnl, volume, wiped, halved }),
         }
     }
 
     pub fn write_table(f: &mut std::fmt::Formatter<'_>, rows: &[KindPnl]) -> std::fmt::Result {
-        writeln!(f, "trader PnL by kind:          PnL      volume   PnL/volume  wiped")?;
+        writeln!(f, "trader PnL by kind:          PnL      volume   PnL/volume  wiped  lost≥50%")?;
         for k in rows {
             let bps = if k.volume > 0.0 { 1e4 * k.pnl / k.volume } else { 0.0 };
             writeln!(
                 f,
-                "  {:<12} n={:<3} {:>+12.0} {:>11.0} {:>+9.1}bp  {}/{}",
+                "  {:<12} n={:<3} {:>+12.0} {:>11.0} {:>+9.1}bp  {}/{}  {}/{}",
                 format!("{:?}", k.kind),
                 k.agents,
                 k.pnl,
                 k.volume,
                 bps,
                 k.wiped,
+                k.agents,
+                k.halved,
                 k.agents
             )?;
         }
