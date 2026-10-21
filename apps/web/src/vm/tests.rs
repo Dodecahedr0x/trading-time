@@ -569,3 +569,13 @@ fn timeframe_seconds() {
     assert_eq!(TIMEFRAMES.map(|t| timeframe_secs(t.0)), [60, 180, 300, 900, 1_800, 3_600, 7_200, 14_400, 21_600, 43_200, 86_400]);
     assert_eq!(timeframe_secs("x"), 3_600);
 }
+
+#[test]
+fn market_header_shows_sol_price_and_band() {
+    let m = MarketJson { sol_price_usd: Some(189.0), sol_change_24h: 0.0127, ..Default::default() };
+    let b = market_bar(&m);
+    assert_eq!((b.sol_price.as_str(), b.sol_change.as_str(), b.sol_up), ("$189.00", "+1.27%", true));
+    assert_eq!(b.band, "$187.11 \u{2013} $190.89");
+    let none = market_bar(&MarketJson::default());
+    assert_eq!((none.sol_price.as_str(), none.band.as_str()), ("\u{2014}", "\u{2014}"));
+}

@@ -59,7 +59,15 @@ pub fn market_view(store: &Store) -> ViewResult {
         Some(past) => (to_f64(mark) - past).exp() - 1.0,
         None => 0.0,
     };
+    let sol = (m.last_pyth_price > 0).then(|| m.last_pyth_price as f64 * 10f64.powi(m.last_pyth_expo));
+    let sol_change = match (sol, store.pyth_price_near(now - DAY)?) {
+        (Some(p), Some(past)) if past > 0.0 => p / past - 1.0,
+        _ => 0.0,
+    };
     Ok(json!({
+        "sol_price_usd": sol,
+        "sol_change_24h": sol_change,
+        "sol_price_ts": m.last_publish_time,
         "mark_secs": secs(mark),
         "index_secs": secs(index),
         "mark_ln": mark.to_string(),

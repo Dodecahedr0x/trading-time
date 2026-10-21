@@ -584,6 +584,19 @@ impl Store {
     }
 
     /// Last `limit` index events, ascending by time.
+    /// Pyth SOL/USD price (USD) recorded by the last index crank published at or before `ts`; the earliest
+    /// recorded price when none is that old.
+    pub fn pyth_price_near(&self, ts: i64) -> Result<Option<f64>> {
+        let q = |sql: &str, p: &[&dyn rusqlite::ToSql]| {
+            self.conn.query_row(sql, p, |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i32>(1)?))).optional()
+        };
+        let row = match q("SELECT pyth_price, pyth_expo FROM index_events WHERE publish_time <= ?1 ORDER BY publish_time DESC LIMIT 1", &[&ts])? {
+            Some(r) => Some(r),
+            None => q("SELECT pyth_price, pyth_expo FROM index_events ORDER BY publish_time LIMIT 1", &[])?,
+        };
+        Ok(row.map(|(p, e)| p as f64 * 10f64.powi(e)))
+    }
+
     pub fn index_points(&self, limit: usize) -> Result<Vec<IndexPoint>> {
         let mut st = self.conn.prepare(
             "SELECT ts, index_ln FROM (SELECT ts, index_ln, signature, seq FROM index_events ORDER BY ts DESC, signature, seq LIMIT ?1) ORDER BY ts",

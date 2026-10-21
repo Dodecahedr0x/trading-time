@@ -25,6 +25,10 @@ impl<'de> Deserialize<'de> for SideStr {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MarketJson {
+    /// Pyth SOL/USD price behind the index; None before the first crank.
+    pub sol_price_usd: Option<f64>,
+    pub sol_change_24h: f64,
+    pub sol_price_ts: i64,
     pub mark_secs: f64,
     pub index_secs: f64,
     pub mark_ln: String,

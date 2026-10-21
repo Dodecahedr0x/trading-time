@@ -356,3 +356,30 @@ async fn reservations_are_netted_and_operators_flagged() {
     let (_, v) = get(&s, "/v1/positions?side=long").await;
     assert_eq!(v[0]["is_operator"], false);
 }
+
+#[tokio::test]
+async fn market_shows_sol_price_and_24h_change() {
+    let mut s = Store::open_in_memory().unwrap();
+    s.set_chain(100, NOW);
+    let mut m = market(3600.0, 3000.0, NOW - 10);
+    m.last_pyth_price = 18_900_000_000;
+    m.last_pyth_expo = -8;
+    m.last_publish_time = NOW - 5;
+    s.upsert_account(&[1; 32], 100, bytes_of(&m)).unwrap();
+    let idx = IndexEvent {
+        index_ln: PodI128::new(0),
+        var_ewma: PodI128::new(1),
+        pyth_price: 18_000_000_000,
+        pyth_expo: -8,
+        _pad: 0,
+        publish_time: NOW - 86_400 - 60,
+        ts: NOW - 86_400 - 60,
+    };
+    s.insert_event("p0", 0, 90, &Event::Index(idx)).unwrap();
+    s.insert_event("p1", 0, 95, &Event::Index(IndexEvent { pyth_price: 20_000_000_000, publish_time: NOW - 3_600, ts: NOW - 3_600, ..idx }))
+        .unwrap();
+    let (_, v) = get(&AppState::new(s), "/v1/market").await;
+    assert!((f(&v["sol_price_usd"]) - 189.0).abs() < 1e-9, "{v}");
+    assert!((f(&v["sol_change_24h"]) - 0.05).abs() < 1e-9, "{v}");
+    assert_eq!(v["sol_price_ts"], NOW - 5);
+}

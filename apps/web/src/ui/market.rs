@@ -15,6 +15,15 @@ pub fn MarketBar() -> Element {
                     span { class: "title", "SOL \u{b7} time to move 1%" }
                     span { class: "sub", "Perpetual \u{b7} 1\u{d7} max \u{b7} settles via funding" }
                 }
+                div { class: "stat sol",
+                    span { class: "lbl", "SOL price \u{b7} Pyth" }
+                    span { class: "num sol-price",
+                        span { "data-testid": "sol-price", "{b.sol_price}" }
+                        " "
+                        span { class: if b.sol_up { "gain" } else { "loss" }, "{b.sol_change}" }
+                    }
+                    span { class: "sub", title: "SOL leaving this range is a 1% move", "1% move: " span { class: "num", "{b.band}" } }
+                }
                 div { class: "stat",
                     span { class: "lbl", "Mark" }
                     span { class: "mark-readout", "data-testid": "market-mark", "{b.mark}" }

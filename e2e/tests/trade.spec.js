@@ -16,6 +16,7 @@ test.beforeEach(async ({ page }) => {
 
 test('market view explains the product', async ({ page }) => {
   await expect(page.getByTestId('market-index')).toHaveText(/\d/);
+  await expect(page.getByTestId('sol-price')).toHaveText(/^\$\d/);
   await expect(page.getByTestId('explain-line')).not.toBeEmpty();
   await expect(page.getByTestId('chart')).toBeVisible();
   await expect(page.getByTestId('quotes-bid-row').first()).toBeVisible();

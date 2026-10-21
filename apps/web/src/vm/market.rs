@@ -1,4 +1,4 @@
-use super::format::{duration, money_compact, pct_signed, DASH};
+use super::format::{duration, money, money_compact, pct_signed, DASH};
 use crate::types::MarketJson;
 
 pub const EXPLAIN: &str = "You trade how long SOL takes to move 1% up or down, not its price. Long time gains when moves get slower (calmer market). Short time gains when moves get faster (wilder market).";
@@ -21,9 +21,17 @@ pub struct MarketBar {
     /// Annualised SOL volatility implied by the mark, "82% a year".
     pub volatility: String,
     pub paused: bool,
+    /// "$189.04"
+    pub sol_price: String,
+    /// "+1.27%"
+    pub sol_change: String,
+    pub sol_up: bool,
+    /// The ±1% band around the current price that the market is timing: "$187.15 – $190.93".
+    pub band: String,
 }
 
 pub fn market_bar(m: &MarketJson) -> MarketBar {
+    let sol = m.sol_price_usd.filter(|p| *p > 0.0 && p.is_finite());
     let payer = if m.funding_rate_per_hour > 0.0 {
         "Long pays"
     } else if m.funding_rate_per_hour < 0.0 {
@@ -43,6 +51,10 @@ pub fn market_bar(m: &MarketJson) -> MarketBar {
         funding_text: funding_text(m.funding_rate_per_hour),
         volatility: implied_vol(m.mark_secs).map_or_else(|| DASH.into(), |v| format!("{:.0}% a year", v * 100.0)),
         paused: m.paused,
+        sol_price: sol.map_or_else(|| DASH.into(), money),
+        sol_change: if sol.is_some() { pct_signed(m.sol_change_24h, 2) } else { DASH.into() },
+        sol_up: m.sol_change_24h >= 0.0,
+        band: sol.map_or_else(|| DASH.into(), |p| format!("{} \u{2013} {}", money(p * 0.99), money(p * 1.01))),
     }
 }
 

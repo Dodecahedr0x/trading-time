@@ -75,6 +75,8 @@ dl.kv dt { color:var(--muted); } dl.kv dd { margin:0; text-align:right; font-fam
 .mbar .stat { display:flex; flex-direction:column; }
 .mbar .title { font-weight:600; font-size:15px; line-height:22px; }
 .mbar .sub { font-size:12px; line-height:16px; color:var(--muted); }
+.mbar .sol-price { font-size:15px; line-height:22px; font-weight:500; }
+.mbar .sol .sub .num { font-size:11px; }
 .mark-readout { font-family:var(--font-display); font-weight:700; font-size:28px; line-height:28px; }
 .explain { margin:0; padding:8px 16px; border-top:1px solid var(--rule); color:var(--muted); }
 .explain strong { font-weight:600; }
