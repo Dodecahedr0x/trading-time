@@ -10,13 +10,23 @@ pub struct Candle {
     pub volume_usdc: f64,
 }
 
+/// TradingView-style timeframes accepted by `?interval=` on candles and analytics volume.
+pub const TIMEFRAMES: [(&str, i64); 11] = [
+    ("1m", 60),
+    ("3m", 180),
+    ("5m", 300),
+    ("15m", 900),
+    ("30m", 1_800),
+    ("1h", 3_600),
+    ("2h", 7_200),
+    ("4h", 14_400),
+    ("6h", 21_600),
+    ("12h", 43_200),
+    ("1d", 86_400),
+];
+
 pub fn interval_secs(s: &str) -> Option<i64> {
-    match s {
-        "1h" => Some(3_600),
-        "4h" => Some(14_400),
-        "1d" => Some(86_400),
-        _ => None,
-    }
+    TIMEFRAMES.iter().find(|(k, _)| *k == s).map(|&(_, v)| v)
 }
 
 /// Buckets ln-time `points` (ascending by ts) into OHLC candles in seconds. Empty buckets
@@ -99,6 +109,10 @@ mod tests {
         assert!(close(day[0].high_secs, 300.0) && close(day[0].close_secs, 80.0));
         assert!(build(&[], &[], 3_600, 10, 0).is_empty());
         assert_eq!(interval_secs("4h"), Some(14_400));
-        assert_eq!(interval_secs("5m"), None);
+        assert_eq!(interval_secs("1m"), Some(60));
+        assert_eq!(interval_secs("15m"), Some(900));
+        assert_eq!(interval_secs("1d"), Some(86_400));
+        assert_eq!(interval_secs("7m"), None);
+        assert!(TIMEFRAMES.windows(2).all(|w| w[0].1 < w[1].1));
     }
 }

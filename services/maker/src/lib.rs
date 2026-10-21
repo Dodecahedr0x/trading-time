@@ -15,7 +15,7 @@ use quote::QuoteParams;
 #[derive(Parser, Clone, Debug)]
 #[command(name = "tradingtime-maker", about = "TradingTime propAMM maker")]
 pub struct Config {
-    #[arg(long, default_value = "http://127.0.0.1:8899")]
+    #[arg(long, default_value = "http://127.0.0.1:18899")]
     pub rpc: String,
     #[arg(long)]
     pub keypair: String,

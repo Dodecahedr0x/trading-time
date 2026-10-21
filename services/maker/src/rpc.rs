@@ -65,8 +65,17 @@ impl Chain for RpcChain {
 
     async fn send(&self, actions: &[Action]) -> anyhow::Result<()> {
         let ixs: Vec<_> = actions.iter().map(|a| self.ix(a)).collect();
-        self.ctx.send(&ixs, &[]).await?;
+        // Quotes go out every slot: waiting for confirmation would stretch the cadence past curve freshness.
+        if actions.iter().all(|a| matches!(a, Action::UpdateCurve(_))) {
+            self.ctx.send_unconfirmed(&ixs).await?;
+        } else {
+            self.ctx.send(&ixs, &[]).await?;
+        }
         Ok(())
+    }
+
+    async fn slot(&self) -> anyhow::Result<u64> {
+        Ok(self.ctx.client.get_slot().await?)
     }
 
     async fn perf_samples(&self) -> anyhow::Result<Vec<PerfSample>> {

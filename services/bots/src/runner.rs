@@ -233,6 +233,7 @@ pub async fn run(cfg: Config) -> Result<()> {
         })
     });
     let reader = Ctx::new(cfg.rpc.clone(), Keypair::new());
+    let discovered = reader.discover(Duration::from_secs(5)).await?;
     let mut history: Vec<f64> = Vec::new();
     let mut timer = tokio::time::interval(Duration::from_millis(cfg.tick_ms.max(50)));
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -244,8 +245,8 @@ pub async fn run(cfg: Config) -> Result<()> {
             let market = reader.market().await?;
             let slot = reader.client.get_slot().await?;
             let now = chain_now(&reader).await?;
-            let ops = fresh_ops(&reader.operators().await?, slot, &market);
-            let orders = reader.orders().await?;
+            let ops = fresh_ops(&reader.operators_in(&discovered).await?, slot, &market);
+            let orders = reader.orders_in(&discovered).await?;
             anyhow::Ok((market, now, ops, orders))
         };
         let (market, now, ops, orders) = match snapshot.await {

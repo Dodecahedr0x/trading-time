@@ -239,7 +239,7 @@ async fn volume_buckets_are_contiguous_and_zero_filled() {
     let total: f64 = v.as_array().unwrap().iter().map(|b| f(&b["volume_usdc"])).sum();
     assert_eq!(total, 3_100.0);
 
-    assert_eq!(get(&s, "/v1/analytics/volume?interval=4h").await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(get(&s, "/v1/analytics/volume?interval=7m").await.0, StatusCode::BAD_REQUEST);
     assert_eq!(get(&s, "/v1/analytics/volume?limit=500").await.1.as_array().unwrap().len(), 500);
     assert_eq!(get(&s, "/v1/analytics/volume?limit=501").await.0, StatusCode::BAD_REQUEST);
     assert_eq!(get(&s, "/v1/analytics/volume?limit=0").await.0, StatusCode::BAD_REQUEST);

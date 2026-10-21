@@ -123,7 +123,7 @@ async fn candles_route() {
     let (st, d) = get(&s, "/v1/candles?interval=1d").await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(d.as_array().unwrap().len(), 1);
-    assert_eq!(get(&s, "/v1/candles?interval=5m").await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(get(&s, "/v1/candles?interval=7m").await.0, StatusCode::BAD_REQUEST);
     assert_eq!(get(&s, "/v1/candles?interval=1h&limit=501").await.0, StatusCode::BAD_REQUEST);
     assert_eq!(get(&s, "/v1/candles?interval=4h&limit=x").await.0, StatusCode::BAD_REQUEST);
 }
@@ -325,7 +325,7 @@ async fn ws_subscribe_snapshot_and_broadcast() {
 
 #[tokio::test]
 async fn cross_origin_reads_allowed_for_the_web_app() {
-    let req = Request::get("/v1/health").header("origin", "http://127.0.0.1:4173").body(Body::empty()).unwrap();
+    let req = Request::get("/v1/health").header("origin", "http://127.0.0.1:14173").body(Body::empty()).unwrap();
     let res = router(seeded()).oneshot(req).await.unwrap();
     assert_eq!(res.headers().get("access-control-allow-origin").unwrap(), "*");
 }

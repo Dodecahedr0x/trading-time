@@ -1,6 +1,7 @@
 mod account;
 mod analytics;
 mod chart;
+mod docs;
 mod ladder;
 mod market;
 mod nav;
@@ -24,6 +25,7 @@ pub struct State {
     pub market: Signal<Option<MarketJson>>,
     pub quotes: Signal<QuotesJson>,
     pub candles: Signal<Vec<CandleJson>>,
+    pub index_points: Signal<Vec<IndexPointJson>>,
     pub interval: Signal<&'static str>,
     pub owner: Signal<Option<String>>,
     pub wallet: Signal<Option<WalletAdapter>>,
@@ -49,7 +51,8 @@ impl State {
             market: Signal::new(None),
             quotes: Signal::new(QuotesJson::default()),
             candles: Signal::new(vec![]),
-            interval: Signal::new("1h"),
+            index_points: Signal::new(vec![]),
+            interval: Signal::new("15m"),
             owner: Signal::new(None),
             wallet: Signal::new(None),
             trader: Signal::new(None),
@@ -80,6 +83,10 @@ pub async fn refresh_market(mut s: State) {
     let iv = *s.interval.peek();
     if let Ok(c) = api::candles(&api_url, iv, 120).await {
         s.candles.set(c);
+    }
+    if let Ok(mut p) = api::index(&api_url, 500).await {
+        p.sort_by_key(|x| x.t);
+        s.index_points.set(p);
     }
 }
 
@@ -119,6 +126,7 @@ pub fn go(mut s: State, page: Page) {
         let _ = w.location().set_hash(match page {
             Page::Trade => "/",
             Page::Analytics => "/analytics",
+            Page::Docs => "/docs",
         });
     }
     s.page.set(page);
@@ -171,12 +179,14 @@ pub fn App() -> Element {
                     div { class: "main",
                         chart::Chart {}
                         ladder::Quotes {}
-                        div { class: "panel ticket-panel", ticket::Ticket {} }
+                        ticket::Ticket {}
                     }
-                    div { class: "panel acct", account::Account {} }
+                    account::Account {}
                 },
                 Page::Analytics => rsx! { analytics::Analytics {} },
+                Page::Docs => rsx! { docs::Docs {} },
             }
+            nav::TabBar {}
         }
     }
 }

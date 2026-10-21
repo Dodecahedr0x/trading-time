@@ -16,6 +16,10 @@ pub struct MarketBar {
     pub funding: String,
     /// "Long pays" / "Short pays" / "—"
     pub funding_payer: String,
+    /// "Long time pays 0.0042%" / "Long time receives …" / "—"
+    pub funding_text: String,
+    /// Annualised SOL volatility implied by the mark, "82% a year".
+    pub volatility: String,
     pub paused: bool,
 }
 
@@ -36,6 +40,24 @@ pub fn market_bar(m: &MarketJson) -> MarketBar {
         open_interest: money_compact(m.long_oi_usdc + m.short_oi_usdc),
         funding: format!("{}/h", pct_signed(m.funding_rate_per_hour, 4)),
         funding_payer: payer.into(),
+        funding_text: funding_text(m.funding_rate_per_hour),
+        volatility: implied_vol(m.mark_secs).map_or_else(|| DASH.into(), |v| format!("{:.0}% a year", v * 100.0)),
         paused: m.paused,
     }
+}
+
+/// Annualised volatility whose calibrated time-to-move equals `secs` (inverse of the index formula).
+pub fn implied_vol(secs: f64) -> Option<f64> {
+    let p = tradingtime_interface::Params::DEFAULT;
+    let x = (1.0 + p.band_bps as f64 / 10_000.0).ln();
+    let c = tradingtime_math::to_f64(p.calib.get());
+    (secs > 0.0).then(|| (c * x * x / secs * 365.0 * 86_400.0).sqrt())
+}
+
+pub fn funding_text(rate_per_hour: f64) -> String {
+    if rate_per_hour == 0.0 || !rate_per_hour.is_finite() {
+        return DASH.into();
+    }
+    let verb = if rate_per_hour > 0.0 { "pays" } else { "receives" };
+    format!("Long time {verb} {:.4}%", rate_per_hour.abs() * 100.0)
 }

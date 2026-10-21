@@ -83,9 +83,9 @@ mod tests {
     #[test]
     fn env_round_trips() {
         let e = Env {
-            rpc_url: "http://127.0.0.1:8899".into(),
-            ws_url: "ws://127.0.0.1:8900".into(),
-            api_url: "http://127.0.0.1:8787".into(),
+            rpc_url: "http://127.0.0.1:18899".into(),
+            ws_url: "ws://127.0.0.1:18900".into(),
+            api_url: "http://127.0.0.1:18787".into(),
             program_id: "p".into(),
             market: "m".into(),
             usdc_mint: "u".into(),

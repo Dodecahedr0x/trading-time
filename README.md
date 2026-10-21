@@ -38,7 +38,7 @@ Design rationale and findings: [docs/design.md](docs/design.md).
 ```
 programs/tradingtime   Pinocchio program (log-time perp, propAMM curves, limit orders, liquidation + ADL)
 crates/{math,interface,client}   shared fixed-point math, account/ix layouts, Rust client
-services/indexer       Carbon + SQLite indexer, REST + WebSocket on :8787 (incl. /v1/analytics/*)
+services/indexer       Carbon + SQLite indexer, REST + WebSocket on :18787 (incl. /v1/analytics/*)
 services/keeper        cranks index/funding/mark, liquidates, fills limit orders
 services/maker         propAMM market maker (Binance/Coinbase feeds, or replay)
 services/bots          simulated traders + Pyth price driver for local stacks

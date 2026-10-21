@@ -3,7 +3,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use solana_pubkey::Pubkey;
-use tradingtime_client::slot::{DEFAULT_SLOT_MS, ESTIMATE_REFRESH_MS, ESTIMATE_TIMEOUT_MS, slot_ms_or_default};
+use tradingtime_client::slot::{
+    DEFAULT_SLOT_MS, ESTIMATE_REFRESH_MS, ESTIMATE_TIMEOUT_MS, FIRST_MEASURE_MS, measured_slot_ms, slot_ms_or_default,
+};
 use tradingtime_interface::Side;
 
 use crate::chain::{Action, Chain};
@@ -15,6 +17,14 @@ fn now_ms() -> i64 {
 }
 
 /// Slot time from perf samples, bounded by ESTIMATE_TIMEOUT_MS; keeps `current_ms` on timeout, 400ms on error.
+/// Current `(slot, unix_ms)`, bounded like `estimate`.
+async fn slot_reading<C: Chain>(chain: &C) -> Option<(u64, i64)> {
+    match tokio::time::timeout(Duration::from_millis(ESTIMATE_TIMEOUT_MS), chain.slot()).await {
+        Ok(Ok(s)) => Some((s, now_ms())),
+        _ => None,
+    }
+}
+
 async fn estimate<C: Chain>(chain: &C, current_ms: u64) -> u64 {
     let Ok(samples) = tokio::time::timeout(Duration::from_millis(ESTIMATE_TIMEOUT_MS), chain.perf_samples()).await else {
         tracing::warn!("perf samples: timed out after {ESTIMATE_TIMEOUT_MS}ms; keeping {current_ms}ms");
@@ -80,14 +90,26 @@ impl<C: Chain, I: Indexer> Keeper<C, I> {
             None => estimate(&self.chain, DEFAULT_SLOT_MS).await,
         };
         let mut estimated_at = Instant::now();
+        let mut slot_mark = if interval_ms.is_none() { slot_reading(&self.chain).await } else { None };
+        let mut measured = false;
         let mut timer = ticker(period, tokio::time::Instant::now());
         tokio::pin!(stop);
         loop {
             tokio::select! {
                 _ = &mut stop => break,
                 _ = timer.tick() => {
-                    if interval_ms.is_none() && estimated_at.elapsed() >= Duration::from_millis(ESTIMATE_REFRESH_MS as u64) {
-                        let ms = estimate(&self.chain, period).await;
+                    let refresh = if measured { ESTIMATE_REFRESH_MS } else { FIRST_MEASURE_MS };
+                    if interval_ms.is_none() && estimated_at.elapsed() >= Duration::from_millis(refresh as u64) {
+                        let reading = slot_reading(&self.chain).await;
+                        let from_slots = slot_mark.zip(reading).and_then(|(a, b)| measured_slot_ms(a, b));
+                        if reading.is_some() {
+                            slot_mark = reading;
+                        }
+                        measured |= from_slots.is_some();
+                        let ms = match from_slots {
+                            Some(ms) => ms,
+                            None => estimate(&self.chain, period).await,
+                        };
                         if ms != period {
                             period = ms;
                             timer = ticker(period, tokio::time::Instant::now() + Duration::from_millis(period.max(1)));

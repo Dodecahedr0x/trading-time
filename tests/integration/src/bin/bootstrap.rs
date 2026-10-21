@@ -14,11 +14,11 @@ use tradingtime_tests::{Env, chain_now, env_path, read_keypair};
 struct Args {
     #[arg(long)]
     keys: String,
-    #[arg(long, default_value = "http://127.0.0.1:8899")]
+    #[arg(long, default_value = "http://127.0.0.1:18899")]
     rpc: String,
-    #[arg(long, default_value = "ws://127.0.0.1:8900")]
+    #[arg(long, default_value = "ws://127.0.0.1:18900")]
     ws: String,
-    #[arg(long, default_value = "http://127.0.0.1:8787")]
+    #[arg(long, default_value = "http://127.0.0.1:18787")]
     api: String,
 }
 

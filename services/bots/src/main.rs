@@ -4,7 +4,7 @@ use tradingtime_bots::runner::{Config, run};
 /// Simulated traders (and a Pyth price driver) for a local TradingTime stack.
 #[derive(Parser)]
 struct Args {
-    #[arg(long, default_value = "http://127.0.0.1:8899")]
+    #[arg(long, default_value = "http://127.0.0.1:18899")]
     rpc: String,
     /// Bot keypairs are created here (bot<i>.json) and reused on restart.
     #[arg(long)]

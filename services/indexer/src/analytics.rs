@@ -10,14 +10,7 @@ use crate::views::{ViewError, ViewResult, derive, fill_json, operator_status, se
 
 const DAY: i64 = 86_400;
 
-pub fn interval_secs(s: &str) -> Option<i64> {
-    match s {
-        "5m" => Some(300),
-        "1h" => Some(3_600),
-        "1d" => Some(DAY),
-        _ => None,
-    }
-}
+pub use crate::candles::interval_secs;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Sort {

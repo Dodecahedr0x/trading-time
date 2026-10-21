@@ -4,14 +4,18 @@
 #   scripts/dev-stack.sh sim     `up` plus two more makers, bot traders and a moving Pyth price
 #   scripts/dev-stack.sh status  list running services
 #   scripts/dev-stack.sh down    stop everything started by `up` / `sim`
+# Ports: TT_RPC_PORT (18899), TT_WS_PORT (18900), TT_API_PORT (18787).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIR="$ROOT/target/dev-stack"
 KEYS="$DIR/keys"
 PIDS="$DIR/pids"
-RPC="http://127.0.0.1:8899"
-WS="ws://127.0.0.1:8900"
-API="http://127.0.0.1:8787"
+RPC_PORT="${TT_RPC_PORT:-18899}"
+WS_PORT="${TT_WS_PORT:-18900}"
+API_PORT="${TT_API_PORT:-18787}"
+RPC="http://127.0.0.1:$RPC_PORT"
+WS="ws://127.0.0.1:$WS_PORT"
+API="http://127.0.0.1:$API_PORT"
 BIN="$ROOT/target/dev-stack/bin"
 export CARGO_TARGET_DIR="$ROOT/target/n1.8"
 
@@ -28,8 +32,20 @@ down() {
   fi
 }
 
+check_ports() {
+  local busy=0
+  for p in "$RPC_PORT" "$WS_PORT" "$API_PORT"; do
+    if lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1; then
+      echo "port $p is in use by: $(lsof -nP -iTCP:"$p" -sTCP:LISTEN | awk 'NR==2 {print $1" (pid "$2")"}')" >&2
+      busy=1
+    fi
+  done
+  [ "$busy" = 0 ] || { echo "free them or set TT_RPC_PORT / TT_WS_PORT / TT_API_PORT" >&2; exit 1; }
+}
+
 up() {
   down
+  check_ports
   mkdir -p "$DIR" "$KEYS" "$BIN"
   rm -f "$DIR/indexer.sqlite"*
   for k in admin keeper trader1 trader2 maker1 maker2 e2e; do
@@ -43,7 +59,7 @@ up() {
   for b in tradingtime-indexer tradingtime-keeper tradingtime-maker tradingtime-bots bootstrap; do cp "$CARGO_TARGET_DIR/release/$b" "$BIN/"; done
 
   echo "starting surfpool"
-  start surfpool surfpool start --ci --network mainnet --no-deploy -y -p 8899 -w 8900
+  start surfpool surfpool start --ci --network mainnet --no-deploy -y -p "$RPC_PORT" -w "$WS_PORT"
   wait_until surfpool 60 rpc_ok
 
   echo "deploying program"
@@ -57,7 +73,7 @@ up() {
   echo "bootstrapping market"
   "$BIN/bootstrap" --keys "$KEYS" --rpc "$RPC" --ws "$WS" --api "$API" >"$DIR/bootstrap.log" 2>&1
 
-  start indexer "$BIN/tradingtime-indexer" --rpc "$RPC" --ws "$WS" --listen 127.0.0.1:8787 --db "$DIR/indexer.sqlite"
+  start indexer "$BIN/tradingtime-indexer" --rpc "$RPC" --ws "$WS" --listen "127.0.0.1:$API_PORT" --db "$DIR/indexer.sqlite"
   start keeper "$BIN/tradingtime-keeper" --rpc "$RPC" --ws "$WS" --api "$API" --keypair "$KEYS/keeper.json"
   start maker1 "$BIN/tradingtime-maker" --rpc "$RPC" --keypair "$KEYS/maker1.json" --deposit-usdc 50000 \
     --half-spread-bps 2 --impact-bps-per-10k 10 --inventory-limit-usdc 20000 --feed "replay:$ROOT/tests/fixtures/sol-ticks.csv"

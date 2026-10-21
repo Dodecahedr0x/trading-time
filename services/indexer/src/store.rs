@@ -391,6 +391,13 @@ impl Store {
         Ok(n > 0)
     }
 
+    /// Every program account seen so far (refreshed by address each second by the poller).
+    pub fn known_pubkeys(&self) -> Result<Vec<String>> {
+        let mut st = self.conn.prepare("SELECT pubkey FROM accounts")?;
+        let rows = st.query_map([], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
     fn accounts_of(&self, kind: &str) -> Result<Vec<([u8; 32], Vec<u8>)>> {
         let mut st = self.conn.prepare("SELECT pubkey, data FROM accounts WHERE kind = ?1")?;
         let rows = st.query_map([kind], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?)))?;

@@ -5,7 +5,7 @@ use crate::api;
 use crate::types::*;
 use crate::vm::analytics::*;
 use crate::vm::format::money_compact;
-use crate::vm::Side;
+use crate::vm::{Side, TIMEFRAMES};
 use dioxus::prelude::*;
 
 const POLL_MS: u32 = 3_000;
@@ -163,20 +163,20 @@ fn VolumeChart(c: Controls, buckets: Vec<VolumeBucketJson>) -> Element {
                     "aria-label": "Volume interval",
                     value: iv,
                     onchange: move |e| {
-                        if let Some(v) = INTERVALS.iter().find(|v| **v == e.value()) {
+                        if let Some((v, _)) = TIMEFRAMES.iter().find(|(v, _)| *v == e.value()) {
                             interval.set(v);
                             spawn(refresh(s, c));
                         }
                     },
-                    for i in INTERVALS {
-                        option { value: i, selected: iv == i, "{i}" }
+                    for (i, label) in TIMEFRAMES {
+                        option { value: i, selected: iv == i, "{label}" }
                     }
                 }
             }
             svg { class: "an-chart", "data-testid": "volume-chart", view_box: "0 0 {VW} {VH + V_FOOT}",
                 for t in g.y_ticks {
                     line { x1: "0", x2: "{plot_w}", y1: "{t.pos}", y2: "{t.pos}", stroke: "var(--rule)", stroke_width: "1" }
-                    text { x: "{plot_w + 6.0}", y: "{t.pos + 4.0}", "{t.label}" }
+                    text { x: "{plot_w + 6.0}", y: "{(t.pos + 4.0).max(11.0)}", "{t.label}" }
                 }
                 for b in g.bars {
                     g {

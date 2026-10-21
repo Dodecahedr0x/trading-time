@@ -262,6 +262,9 @@ impl Chain for FakeChain {
         self.sent.lock().unwrap().push(actions.to_vec());
         Ok(())
     }
+    async fn slot(&self) -> anyhow::Result<u64> {
+        Err(anyhow::anyhow!("no slot clock in tests"))
+    }
     async fn perf_samples(&self) -> anyhow::Result<Vec<PerfSample>> {
         tokio::time::sleep(std::time::Duration::from_millis(self.samples_delay_ms)).await;
         self.samples.clone().ok_or_else(|| anyhow::anyhow!("method not found"))

@@ -543,3 +543,29 @@ mod analytics {
         assert_eq!(l[0].insurance, "$0.00");
     }
 }
+
+#[test]
+fn timeframes_run_one_minute_to_one_day() {
+    use super::TIMEFRAMES;
+    let values: Vec<&str> = TIMEFRAMES.iter().map(|t| t.0).collect();
+    assert_eq!(values, ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"]);
+    assert_eq!(TIMEFRAMES.last().unwrap().1, "1D");
+}
+
+#[test]
+fn market_header_volatility_and_funding_text() {
+    use super::market::{funding_text, implied_vol};
+    let v = implied_vol(4_440.0).unwrap();
+    assert!((v - 0.8).abs() < 0.01, "{v}");
+    assert!(implied_vol(0.0).is_none());
+    assert_eq!(funding_text(0.000042), "Long time pays 0.0042%");
+    assert_eq!(funding_text(-0.0001), "Long time receives 0.0100%");
+    assert_eq!(funding_text(0.0), "—");
+}
+
+#[test]
+fn timeframe_seconds() {
+    use super::{timeframe_secs, TIMEFRAMES};
+    assert_eq!(TIMEFRAMES.map(|t| timeframe_secs(t.0)), [60, 180, 300, 900, 1_800, 3_600, 7_200, 14_400, 21_600, 43_200, 86_400]);
+    assert_eq!(timeframe_secs("x"), 3_600);
+}

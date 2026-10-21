@@ -5,20 +5,26 @@ use super::rows::{side_label, side_of};
 use super::Side;
 use crate::types::*;
 
-/// Hash route: `#/analytics` = Analytics; empty, `#/` or anything else = Trade.
+/// Hash route: `#/analytics` = Analytics, `#/docs[/section]` = Docs; empty, `#/` or anything else = Trade.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
     Trade,
     Analytics,
+    Docs,
 }
 
 pub fn page_from_hash(hash: &str) -> Page {
     let h = hash.trim_start_matches('#').trim_start_matches('/');
     let h = h.split(['?', '/']).next().unwrap_or("");
-    if h.eq_ignore_ascii_case("analytics") { Page::Analytics } else { Page::Trade }
+    if h.eq_ignore_ascii_case("analytics") {
+        Page::Analytics
+    } else if h.eq_ignore_ascii_case("docs") {
+        Page::Docs
+    } else {
+        Page::Trade
+    }
 }
 
-pub const INTERVALS: [&str; 3] = ["5m", "1h", "1d"];
 /// (query value, label)
 pub const SORTS: [(&str, &str); 3] = [("pnl", "PnL"), ("volume", "Volume"), ("pnl_pct", "PnL %")];
 

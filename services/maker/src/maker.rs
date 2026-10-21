@@ -3,7 +3,7 @@ use crate::feed::{Feed, FeedMode, unix_ms};
 use crate::forecast::{DEFAULT_HALF_LIFE_SECS, Forecaster, implied_var};
 use crate::quote::QuoteParams;
 pub use crate::slot::ESTIMATE_TIMEOUT_MS;
-use crate::slot::{DEFAULT_SLOT_MS, ESTIMATE_REFRESH_MS, slot_ms_or_default};
+use crate::slot::{DEFAULT_SLOT_MS, ESTIMATE_REFRESH_MS, FIRST_MEASURE_MS, measured_slot_ms, slot_ms_or_default};
 use std::time::Duration;
 use tradingtime_interface::OperatorStatus;
 
@@ -62,6 +62,14 @@ async fn estimate<C: Chain>(chain: &C, current_ms: u64) -> u64 {
     ms
 }
 
+/// Current `(slot, unix_ms)`, bounded like `estimate`.
+async fn slot_reading<C: Chain>(chain: &C) -> Option<(u64, i64)> {
+    match tokio::time::timeout(Duration::from_millis(ESTIMATE_TIMEOUT_MS), chain.slot()).await {
+        Ok(Ok(s)) => Some((s, unix_ms())),
+        _ => None,
+    }
+}
+
 fn ticker(period_ms: u64) -> tokio::time::Interval {
     let p = Duration::from_millis(period_ms.max(1));
     let mut t = tokio::time::interval_at(tokio::time::Instant::now() + p, p);
@@ -81,6 +89,8 @@ pub async fn run_with<C: Chain>(chain: &C, opts: LoopOpts, stop: impl Future<Out
         None => estimate(chain, DEFAULT_SLOT_MS).await,
     };
     let mut estimated_at = unix_ms();
+    let mut slot_mark = if opts.slot_ms.is_none() { slot_reading(chain).await } else { None };
+    let mut measured = false;
     let mut timer = tokio::time::interval(Duration::from_millis(period.max(1)));
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut feed_open = true;
@@ -101,8 +111,18 @@ pub async fn run_with<C: Chain>(chain: &C, opts: LoopOpts, stop: impl Future<Out
                     }
                     market_at = now;
                 }
-                if opts.slot_ms.is_none() && now - estimated_at >= ESTIMATE_REFRESH_MS {
-                    let ms = estimate(chain, period).await;
+                let refresh = if measured { ESTIMATE_REFRESH_MS } else { FIRST_MEASURE_MS };
+                if opts.slot_ms.is_none() && now - estimated_at >= refresh {
+                    let reading = slot_reading(chain).await;
+                    let from_slots = slot_mark.zip(reading).and_then(|(a, b)| measured_slot_ms(a, b));
+                    if reading.is_some() {
+                        slot_mark = reading;
+                    }
+                    measured |= from_slots.is_some();
+                    let ms = match from_slots {
+                        Some(ms) => ms,
+                        None => estimate(chain, period).await,
+                    };
                     if ms != period {
                         period = ms;
                         timer = ticker(period);

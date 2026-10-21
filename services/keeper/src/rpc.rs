@@ -3,7 +3,10 @@ use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
 use tradingtime_client::slot::{PerfSample, SAMPLE_LIMIT};
-use tradingtime_client::{ix, rpc::Ctx};
+use tradingtime_client::{
+    ix,
+    rpc::{Ctx, Discovered},
+};
 use tradingtime_interface::{LimitOrder, Market, Operator, Trader};
 
 use crate::chain::{Action, Chain, parse_pyth_publish_time};
@@ -22,13 +25,21 @@ pub fn to_instruction(keeper: &Pubkey, action: &Action) -> solana_instruction::I
     }
 }
 
+/// Re-scan period for operator and order addresses (each scan is slow on a forked validator).
+const DISCOVERY_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub struct RpcChain {
     pub ctx: Ctx,
+    discovered: tokio::sync::OnceCell<Discovered>,
 }
 
 impl RpcChain {
     pub fn new(rpc_url: &str, payer: Keypair) -> Self {
-        Self { ctx: Ctx::new(rpc_url, payer) }
+        Self { ctx: Ctx::new(rpc_url, payer), discovered: tokio::sync::OnceCell::new() }
+    }
+
+    async fn discovered(&self) -> Result<&Discovered> {
+        self.discovered.get_or_try_init(|| self.ctx.discover(DISCOVERY_EVERY)).await
     }
 }
 
@@ -47,10 +58,10 @@ impl Chain for RpcChain {
         parse_pyth_publish_time(&data).context("not a PriceUpdateV2 account")
     }
     async fn operators(&self) -> Result<Vec<(Pubkey, Operator)>> {
-        self.ctx.operators().await
+        self.ctx.operators_in(self.discovered().await?).await
     }
     async fn orders(&self) -> Result<Vec<(Pubkey, LimitOrder)>> {
-        self.ctx.orders().await
+        self.ctx.orders_in(self.discovered().await?).await
     }
     async fn trader(&self, owner: &Pubkey) -> Result<Option<Trader>> {
         self.ctx.trader(owner).await

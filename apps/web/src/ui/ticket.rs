@@ -1,5 +1,5 @@
 use super::{trade, State};
-use crate::vm::format::{duration, money, parse_amount, parse_duration, DASH};
+use crate::vm::format::{duration, hms, money, money_whole, parse_amount, parse_duration, DASH};
 use crate::vm::payoff::{buy_label, payoff};
 use crate::vm::ticket::*;
 use crate::vm::Side;
@@ -23,27 +23,29 @@ pub fn Ticket() -> Element {
     }
     .unwrap_or(mark);
     let fee = size * TAKER_FEE_BPS as f64 / 10_000.0;
+    let fee_bp = TAKER_FEE_BPS as f64;
+    let impact_bp = if mark > 0.0 && entry > 0.0 && kind == OrderType::Market { (entry / mark).ln().abs() * 1e4 } else { 0.0 };
     let dep = deposit_needed(trader.as_ref(), side, kind, size);
     let equity_after = trader.as_ref().map(|t| t.equity_usdc).unwrap_or(0.0) + dep - fee;
     let p = payoff(side, size, entry, q_after(trader.as_ref(), side, size), equity_after, MAINTENANCE_BPS);
     let label = buy_label(side, size);
-    let (double_cls, half_cls) = if p.if_double_gain { ("v gain", "v loss") } else { ("v loss", "v gain") };
     let busy = *s.busy.read();
     let status = s.tx_status.read().clone();
-    let (long_cls, short_cls) = match side {
-        Side::Long => ("long on", "short"),
-        Side::Short => ("long", "short on"),
+    let calm = side == Side::Long;
+    let tone = if calm { "long" } else { "short" };
+    let side_name = if calm { "Long time" } else { "Short time" };
+    let at = if entry > 0.0 { duration(entry) } else { DASH.into() };
+    let sentence = format!(
+        "{} of {side_name} at {at}. You gain if SOL\u{2019}s 1% moves take {} than {at}, as measured by the 7-day index.",
+        money_whole(size),
+        if calm { "longer" } else { "less time" },
+    );
+    let (twice, half) = (duration(entry * 2.0), duration(entry / 2.0));
+    let (up_label, up, down_label, down) = if calm {
+        (format!("If it slows to {twice}"), p.if_double.clone(), format!("If it speeds up to {half}"), p.if_half.clone())
+    } else {
+        (format!("If it speeds up to {half}"), p.if_half.clone(), format!("If it slows to {twice}"), p.if_double.clone())
     };
-    let buy_cls = match side {
-        Side::Long => "buy long",
-        Side::Short => "buy short",
-    };
-    let funding = s
-        .market
-        .read()
-        .as_ref()
-        .map(|m| crate::vm::format::pct_signed(m.funding_rate_per_hour, 4) + "/h")
-        .unwrap_or_else(|| DASH.into());
     let status_cls = match status.as_deref() {
         Some("Confirmed") => "txs gain",
         Some(t) if t.starts_with("Failed") => "txs loss",
@@ -60,51 +62,73 @@ pub fn Ticket() -> Element {
         });
     };
     rsx! {
-        div { class: "ticket",
-            div { class: "tabs",
-                button { class: if kind == OrderType::Market { "on" } else { "" }, "data-testid": "order-type-market",
-                    onclick: move |_| s.kind.set(OrderType::Market), "Market" }
-                button { class: if kind == OrderType::Limit { "on" } else { "" }, "data-testid": "order-type-limit",
-                    onclick: move |_| {
-                        s.kind.set(OrderType::Limit);
-                        if s.limit.peek().is_empty() && mark > 0.0 {
-                            s.limit.set(duration(mark));
-                        }
-                    },
-                    "Limit" }
-            }
-            div { class: "sides",
-                button { class: long_cls, "data-testid": "side-long", onclick: move |_| s.side.set(Side::Long), "Long time" }
-                button { class: short_cls, "data-testid": "side-short", onclick: move |_| s.side.set(Side::Short), "Short time" }
-            }
-            if kind == OrderType::Limit {
-                label { class: "label", "Limit time to move 1%" }
-                input { "data-testid": "limit-input", value: "{s.limit}", placeholder: "1h 30m",
-                    oninput: move |e| s.limit.set(e.value()) }
-            }
-            div { class: "line", span { class: "label", "Size (USDC)" } span { class: "label", "Max {money(max)}" } }
-            input { "data-testid": "size-input", value: "{s.size}", inputmode: "decimal",
-                oninput: move |e| s.size.set(e.value()) }
-            div { class: "presets",
-                for pct in [25u32, 50, 75, 100] {
-                    button { onclick: move |_| s.size.set(format!("{}", preset(max, pct))), "{pct}%" }
+        section { class: "panel ticket-panel", "aria-label": "Order ticket",
+            div { class: "ticket",
+                div { class: "tabs", role: "group", "aria-label": "Order type",
+                    button { class: if kind == OrderType::Market { "on" } else { "" }, "data-testid": "order-type-market",
+                        onclick: move |_| s.kind.set(OrderType::Market), "Market" }
+                    button { class: if kind == OrderType::Limit { "on" } else { "" }, "data-testid": "order-type-limit",
+                        onclick: move |_| {
+                            s.kind.set(OrderType::Limit);
+                            if s.limit.peek().is_empty() && mark > 0.0 {
+                                s.limit.set(duration(mark));
+                            }
+                        },
+                        "Limit" }
                 }
+                div { class: "sides", role: "group", "aria-label": "What you are buying",
+                    button { class: if calm { "long on" } else { "long" }, "data-testid": "side-long", "aria-pressed": "{calm}",
+                        onclick: move |_| s.side.set(Side::Long),
+                        span { class: "s", "Long time" } span { class: "h", "moves get slower" } }
+                    button { class: if calm { "short" } else { "short on" }, "data-testid": "side-short", "aria-pressed": "{!calm}",
+                        onclick: move |_| s.side.set(Side::Short),
+                        span { class: "s", "Short time" } span { class: "h", "moves get faster" } }
+                }
+                div { class: "avail", span { class: "muted", "Available" } span { class: "num", "{money(max)}" } }
+                if kind == OrderType::Limit {
+                    div { class: "field",
+                        label { class: "lbl", r#for: "tt-limit", "Limit time" }
+                        input { id: "tt-limit", "data-testid": "limit-input", value: "{s.limit}", placeholder: "1h 30m",
+                            oninput: move |e| s.limit.set(e.value()) }
+                    }
+                }
+                div { class: "field",
+                    label { class: "lbl", r#for: "tt-size", "Size (USD)" }
+                    input { id: "tt-size", "data-testid": "size-input", value: "{s.size}", inputmode: "decimal",
+                        oninput: move |e| s.size.set(e.value()) }
+                    div { class: "presets",
+                        for pct in [25u32, 50, 75, 100] {
+                            button { onclick: move |_| s.size.set(format!("{}", preset(max, pct))), "{pct}%" }
+                        }
+                    }
+                }
+                div { class: "buying {tone}", "data-testid": "you-are-buying",
+                    span { class: "lbl", "You are buying" }
+                    p { "{sentence}" }
+                    dl { class: "kv",
+                        dt { "{up_label}" } dd { class: "gain", "{up}" }
+                        dt { "{down_label}" } dd { class: "loss", "{down}" }
+                        dt { "Closed out at" } dd { "{p.closed_out}" }
+                    }
+                }
+                dl { class: "kv",
+                    dt { if kind == OrderType::Market { "Average fill" } else { "Limit" } }
+                    dd { if entry > 0.0 { "{hms(entry)}" } else { "{DASH}" } }
+                    if kind == OrderType::Market {
+                        dt { "Spread and size impact" } dd { "{impact_bp:.1}bp" }
+                    }
+                    dt { "Fee" } dd { "{money(fee)}" }
+                    if kind == OrderType::Market {
+                        dt { "Total cost" } dd { "{impact_bp + fee_bp:.1}bp" }
+                    }
+                    if dep > 0.0 {
+                        dt { "Deposit first" } dd { "{money(dep)}" }
+                    }
+                    dt { "Leverage" } dd { "1\u{d7}" }
+                }
+                button { class: "buy {tone}", "data-testid": "buy-button", disabled: busy || size <= 0.0, onclick: on_buy, "{label}" }
+                span { class: status_cls, "data-testid": "tx-status", {status.unwrap_or_default()} }
             }
-            div { class: "buying", "data-testid": "you-are-buying",
-                span { class: "head", "{p.headline}" }
-                span { "{p.sentence}" }
-                div { class: "line", span { "If time doubles" } span { class: double_cls, "{p.if_double}" } }
-                div { class: "line", span { "If time halves" } span { class: half_cls, "{p.if_half}" } }
-                div { class: "line", span { "Closed out at" } span { class: "v", "{p.closed_out}" } }
-            }
-            div { class: "line", span { class: "muted", "Est. entry" } span { class: "v", "{duration(entry)}" } }
-            div { class: "line", span { class: "muted", "Fee (5 bp)" } span { class: "v", "{money(fee)}" } }
-            if dep > 0.0 {
-                div { class: "line", span { class: "muted", "Deposit first" } span { class: "v", "{money(dep)}" } }
-            }
-            div { class: "line", span { class: "muted", "Funding" } span { class: "v", "{funding}" } }
-            button { class: buy_cls, "data-testid": "buy-button", disabled: busy || size <= 0.0, onclick: on_buy, "{label}" }
-            span { class: status_cls, "data-testid": "tx-status", {status.unwrap_or_default()} }
         }
     }
 }

@@ -4,8 +4,8 @@ pub struct Config {
     pub api_url: String,
 }
 
-pub const DEFAULT_RPC: &str = "http://127.0.0.1:8899";
-pub const DEFAULT_API: &str = "http://127.0.0.1:8787";
+pub const DEFAULT_RPC: &str = "http://127.0.0.1:18899";
+pub const DEFAULT_API: &str = "http://127.0.0.1:18787";
 
 impl Config {
     /// `query` is `location.search` ("?rpc=...&api=..."), possibly empty.
@@ -32,7 +32,7 @@ impl Config {
         Config::from_query(&search)
     }
 
-    /// `http://host:8787` -> `ws://host:8787/v1/ws`.
+    /// `http://host:18787` -> `ws://host:18787/v1/ws`.
     pub fn ws_url(&self) -> String {
         let base = if let Some(rest) = self.api_url.strip_prefix("https://") {
             format!("wss://{rest}")
@@ -80,6 +80,6 @@ mod tests {
         assert_eq!(c.api_url, "http://h:1");
         assert_eq!(c.ws_url(), "ws://h:1/v1/ws");
         let d = Config::from_query("");
-        assert!(d.rpc_url.ends_with(":8899") || option_env!("TT_RPC_URL").is_some());
+        assert!(d.rpc_url.ends_with(":18899") || option_env!("TT_RPC_URL").is_some());
     }
 }

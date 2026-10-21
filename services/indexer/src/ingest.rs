@@ -159,8 +159,8 @@ fn b64(v: &Value) -> Option<Vec<u8>> {
 
 const CLOCK_SYSVAR: &str = "SysvarC1ock11111111111111111111111111111111";
 
-/// Slot + chain clock, then all program accounts (backfill and a safety net under programSubscribe).
-pub async fn poll_once(http: &reqwest::Client, url: &str, state: &AppState, accounts: bool) -> Result<()> {
+/// Slot + chain clock, then every known program account by address (`getMultipleAccounts`, fast).
+pub async fn poll_once(http: &reqwest::Client, url: &str, state: &AppState) -> Result<()> {
     let slot = rpc(http, url, "getSlot", json!([{ "commitment": "confirmed" }])).await?.as_u64().unwrap_or(0);
     let clock = rpc(http, url, "getAccountInfo", json!([CLOCK_SYSVAR, { "encoding": "base64" }])).await?;
     let ts = clock
@@ -170,37 +170,62 @@ pub async fn poll_once(http: &reqwest::Client, url: &str, state: &AppState, acco
     if let Some(ts) = ts {
         state.store.lock().map_err(|_| anyhow!("store poisoned"))?.set_chain(slot, ts);
     }
-    if accounts {
-        let program = Pubkey::new_from_array(PROGRAM_ID).to_string();
-        let res = rpc(http, url, "getProgramAccounts", json!([program, { "encoding": "base64", "withContext": true }])).await?;
+    let known = state.store.lock().map_err(|_| anyhow!("store poisoned"))?.known_pubkeys()?;
+    for chunk in known.chunks(100) {
+        let res = rpc(http, url, "getMultipleAccounts", json!([chunk, { "encoding": "base64", "commitment": "confirmed" }])).await?;
         let ctx_slot = res.pointer("/context/slot").and_then(Value::as_u64).unwrap_or(slot);
-        let list = res.get("value").and_then(Value::as_array).cloned().unwrap_or_default();
-        for a in list {
-            let (Some(pk), Some(data)) = (
-                a.get("pubkey").and_then(Value::as_str).and_then(|s| s.parse::<Pubkey>().ok()),
-                a.pointer("/account/data").and_then(b64),
-            ) else {
-                continue;
-            };
+        let values = res.get("value").and_then(Value::as_array).cloned().unwrap_or_default();
+        for (key, acc) in chunk.iter().zip(values) {
+            let (Ok(pk), Some(data)) = (key.parse::<Pubkey>(), acc.pointer("/data").and_then(b64)) else { continue };
             apply_account(state, &pk.to_bytes(), ctx_slot, &data)?;
         }
     }
     Ok(())
 }
 
+/// All program accounts (`getProgramAccounts`): discovers new accounts. Slow on a forked validator, so it runs
+/// on its own schedule and never delays the per-second refresh.
+pub async fn discover(http: &reqwest::Client, url: &str, state: &AppState) -> Result<usize> {
+    let program = Pubkey::new_from_array(PROGRAM_ID).to_string();
+    let res = rpc(http, url, "getProgramAccounts", json!([program, { "encoding": "base64", "withContext": true }])).await?;
+    let ctx_slot = res.pointer("/context/slot").and_then(Value::as_u64).unwrap_or(0);
+    let list = res.get("value").and_then(Value::as_array).cloned().unwrap_or_default();
+    for a in &list {
+        let (Some(pk), Some(data)) = (
+            a.get("pubkey").and_then(Value::as_str).and_then(|s| s.parse::<Pubkey>().ok()),
+            a.pointer("/account/data").and_then(b64),
+        ) else {
+            continue;
+        };
+        apply_account(state, &pk.to_bytes(), ctx_slot, &data)?;
+    }
+    Ok(list.len())
+}
+
 /// Runs the Carbon pipeline (restarting on failure) and the slot/clock/account poller forever.
 pub async fn run(cfg: Config, state: AppState) -> Result<()> {
     let poll_state = state.clone();
     let rpc_url = cfg.rpc_url.clone();
+    // Makers re-quote every slot and curves go stale after 10 slots (~4 s), so known accounts are re-read every
+    // second; programSubscribe alone lags on Surfpool and would show live makers as stale.
     let poller = tokio::spawn(async move {
         let http = reqwest::Client::new();
-        let mut tick = 0u64;
         loop {
-            if let Err(e) = poll_once(&http, &rpc_url, &poll_state, tick.is_multiple_of(5)).await {
+            if let Err(e) = poll_once(&http, &rpc_url, &poll_state).await {
                 tracing::warn!("poll: {e:#}");
             }
-            tick += 1;
             tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    });
+    let discover_state = state.clone();
+    let rpc_url = cfg.rpc_url.clone();
+    tokio::spawn(async move {
+        let http = reqwest::Client::new();
+        loop {
+            if let Err(e) = discover(&http, &rpc_url, &discover_state).await {
+                tracing::warn!("discover: {e:#}");
+            }
+            tokio::time::sleep(Duration::from_secs(10)).await;
         }
     });
     let cfg = Arc::new(cfg);

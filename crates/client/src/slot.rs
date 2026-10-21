@@ -24,6 +24,19 @@ pub fn estimate_slot_ms(samples: &[PerfSample]) -> u64 {
     (secs.saturating_mul(1_000) / slots).clamp(MIN_SLOT_MS, MAX_SLOT_MS)
 }
 
+/// Fewest slots between two readings for a measured slot time to be trusted.
+pub const MIN_MEASURED_SLOTS: u64 = 10;
+/// First re-estimate after start, so the measured rate replaces the sampled guess quickly.
+pub const FIRST_MEASURE_MS: i64 = 5_000;
+
+/// Slot time from the chain's own slot counter between two `(slot, unix_ms)` readings, clamped like
+/// `estimate_slot_ms`. Preferred over performance samples, which local validators (Surfpool) synthesise.
+pub fn measured_slot_ms(from: (u64, i64), to: (u64, i64)) -> Option<u64> {
+    let slots = to.0.checked_sub(from.0)?;
+    let ms = to.1 - from.1;
+    (slots >= MIN_MEASURED_SLOTS && ms > 0).then(|| (ms as u64 / slots).clamp(MIN_SLOT_MS, MAX_SLOT_MS))
+}
+
 pub fn slot_ms_or_default<E>(r: Result<Vec<PerfSample>, E>) -> u64 {
     r.map_or(DEFAULT_SLOT_MS, |s| estimate_slot_ms(&s))
 }
@@ -45,5 +58,10 @@ mod tests {
         assert_eq!(estimate_slot_ms(&[]), DEFAULT_SLOT_MS);
         assert_eq!(slot_ms_or_default(Err("method not found")), 400);
         assert_eq!((ESTIMATE_REFRESH_MS, ESTIMATE_TIMEOUT_MS), (60_000, 250));
+        // Surfpool: 25 slots in 10 s while its samples claim 1 slot/s.
+        assert_eq!(measured_slot_ms((100, 0), (125, 10_000)), Some(400));
+        assert_eq!(measured_slot_ms((100, 0), (105, 10_000)), None);
+        assert_eq!(measured_slot_ms((100, 0), (90, 10_000)), None);
+        assert_eq!(measured_slot_ms((0, 0), (1_000, 10)), Some(MIN_SLOT_MS));
     }
 }

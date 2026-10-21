@@ -2,9 +2,10 @@
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
-rpc := "http://127.0.0.1:8899"
-api := "http://127.0.0.1:8787"
-web_port := env_var_or_default("TT_WEB_PORT", "4173")
+# Override any port with TT_RPC_PORT / TT_WS_PORT / TT_API_PORT / TT_WEB_PORT.
+rpc := "http://127.0.0.1:" + env_var_or_default("TT_RPC_PORT", "18899")
+api := "http://127.0.0.1:" + env_var_or_default("TT_API_PORT", "18787")
+web_port := env_var_or_default("TT_WEB_PORT", "14173")
 app_url := "http://127.0.0.1:" + web_port + "/?rpc=" + rpc + "&api=" + api
 
 default:

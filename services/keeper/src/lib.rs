@@ -16,12 +16,12 @@ use crate::rpc::{RpcChain, read_keypair};
 #[derive(Clone, Debug, Parser)]
 #[command(name = "tradingtime-keeper", about = "Permissionless TradingTime keeper")]
 pub struct Config {
-    #[arg(long, default_value = "http://127.0.0.1:8899")]
+    #[arg(long, default_value = "http://127.0.0.1:18899")]
     pub rpc: String,
     /// Accepted for stack uniformity; the keeper polls RPC.
-    #[arg(long, default_value = "ws://127.0.0.1:8900")]
+    #[arg(long, default_value = "ws://127.0.0.1:18900")]
     pub ws: String,
-    #[arg(long, default_value = "http://127.0.0.1:8787")]
+    #[arg(long, default_value = "http://127.0.0.1:18787")]
     pub api: String,
     #[arg(long)]
     pub keypair: String,
