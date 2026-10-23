@@ -1,6 +1,6 @@
 # TradingTime: Design Document
 
-*Status: research complete in simulation; no on-chain code yet. Last updated 2026-10-20.*
+*Status: research complete in simulation; on-chain program, services and web app implemented and running on a local Surfpool fork (§7). Last updated 2026-10-23.*
 
 ## 1. Summary
 
@@ -30,7 +30,7 @@ Competing propAMMs go further: 8–28bp to retail, operators still profitable, a
 public-data arbitrageur shut out (§4.10).
 
 **What is still open.** Whether operators can reliably land curve updates before takers,
-oracle design for the index on-chain, and retail outcomes: even at low cost, most leveraged retail traders lose at least half
+how the per-update index (§6, item 1) behaves on live Pyth data, and retail outcomes: even at low cost, most leveraged retail traders lose at least half
 their capital in a year on this instrument.
 
 ## 2. The product
@@ -255,12 +255,12 @@ and turnover rather than costs.
 |---|---|---|
 | Underlying | SOL/USD | |
 | Band | ±1% | |
-| Index | `T_index = c · ln(1.01)² / v`, v = EWMA of Parkinson variance on 1-min bars, half-life 7 days | §4.7 |
+| Index | `T_index = c · ln(1.01)² / v`, v = EWMA of variance, half-life 7 days. Simulated on 1-min Parkinson bars; built on-chain as r²/Δt of every Pyth update (§7) | §4.7 |
 | Calibration c | ≈0.91, refit periodically | §2 |
 | Index bounds | 60 s – 7 days | numerical safety |
 | PnL | log-time: `q · Δln(price)` | symmetric payoff, §4.3 |
 | Funding | continuous, `q · k · ln(mark / index)`, k = 1/day | anchors the book to the index |
-| Mark price | best-bid/best-offer mid across operators; index if one side is empty | |
+| Mark price | median centre of fresh operator curves (built); falls back to the index after 60 s without fresh curves | robust to one stale or outlying operator |
 
 ### 5.2 Venue: competing propAMMs
 
@@ -269,7 +269,8 @@ and turnover rather than costs.
 - **Updates:** every slot, before takers, with priority (§4.10). Operators price from a fast
   vol estimate (15 minutes or faster on 1-minute bars).
 - **Routing:** an aggregator splits each taker order across curves by best marginal price,
-  with a slippage limit. Taker fee 5bp.
+  with a slippage limit. Taker fee 2bp (built; 5bp in simulation), paid into the insurance fund until
+  it holds 5% of open interest, then to the treasury (§7.4).
 - **Starting parameters:** half-spread 0.02–0.05%, impact 0.1–0.25% per $10k, inventory limit
   about 10% of operator capital. Competition, not the protocol, should set the final values.
 - **Fallback:** a plain order book with designated makers (§4.8) if operators cannot get
@@ -283,6 +284,8 @@ and turnover rather than costs.
 | Maintenance margin | 5% of \|q\| |
 | Liquidation | market order across operator curves with limit = bankruptcy price; remainder auto-deleveraged pro rata against opposite positions at that price |
 | Liquidation fee | 1% of closed notional → insurance fund |
+| Insurance fund | liquidation fees, plus taker fees until it holds 5% of open interest; covers negative equity before ADL |
+| ADL counterparties | in-profit opposite traders, pro rata at the bankruptcy price; operators are excluded, so a position only operators could absorb stays open until traders take the other side |
 | Bad debt | impossible by construction (ADL at bankruptcy price); ADL shortfall is tracked |
 
 ### 5.4 What this is not
@@ -294,10 +297,11 @@ version is not tradeable at reasonable cost.
 
 ## 6. Risks and open questions
 
-1. **Index oracle.** Parkinson variance needs per-minute highs and lows. Pyth publishes
-   prices, not OHLC bars, so a keeper must aggregate updates into bars, or the index must
-   use a different estimator. The index must be manipulation-resistant; a 7-day EWMA helps,
-   but bar construction is an attack surface.
+1. **Index oracle.** Parkinson variance needs per-minute highs and lows, which Pyth does not
+   publish. The built index folds every Pyth update into the EWMA as r²/Δt instead (close-to-close
+   on irregular steps), rejecting prices older than 60 s. It is noisier than Parkinson per sample
+   but has no bar construction to attack; the 7-day half-life does the smoothing. A fresh market
+   takes its starting index as an `InitializeMarket` argument rather than waiting days to converge.
 2. **Update priority.** The propAMM result depends on operators landing curve updates before
    takers in every slot. Stale quotes cost operators everything in simulation.
 3. **Operator competition.** One operator maximizes profit at wide spreads (0.91%, 71bp to
@@ -319,35 +323,79 @@ version is not tradeable at reasonable cost.
    - The pool's borrow rate (0.86%/day) is high and dominates pool retail costs.
    - The Informed agent is omniscient, an upper bound on informed flow.
 
-## 7. Solana implementation sketch
+## 7. Solana implementation
 
-| Account | Contents |
+Built and tested on a local Surfpool mainnet fork (real USDC and the Pyth SOL/USD feed account).
+
+### 7.1 Components
+
+| Path | Role |
 |---|---|
-| `Market` | parameters, funding index, insurance balance, fees |
-| `IndexState` | current bar (open/high/low), EWMA variance, last update slot |
-| `Operator` | curve parameters (fair, half-spread, impact, inventory limit), last update slot |
-| `Trader` | cash, q, cost basis, funding snapshot, open order IDs |
+| `programs/tradingtime` | Pinocchio program, `no_std`, zero-copy accounts |
+| `crates/math` | fixed-point log-time math (Fx = i128, 48 fractional bits): ln/exp, index, positions, funding, curve routing; shared by the program, services, web app and simulator |
+| `crates/interface`, `crates/client` | account and instruction layouts, events; Rust client and builders |
+| `services/keeper` | permissionless crank: index on every new Pyth price, funding, mark, liquidations with ADL, limit-order fills, closing expired orders |
+| `services/maker` | propAMM operator: fair value from a 15-minute EWMA of Binance (Coinbase fallback) trades, curve update every slot |
+| `services/indexer` | Carbon + SQLite; REST and WebSocket API, including protocol analytics |
+| `services/bots` | local-stack traders (noise, momentum, mean-revert, whale, limit, informed) and a Pyth price driver with calm/storm regimes |
+| `apps/web` | Dioxus web app (trade, analytics, docs), Wallet Standard wallets |
 
-| Instruction | Notes |
-|---|---|
-| `deposit` / `withdraw` | withdraw checks initial margin at mark |
-| `update_curve` | operator-only, small and cheap so it can land every slot; sets fair and parameters |
-| `swap` | takers via the aggregator; fills against one or more operator curves; slippage limit |
-| `crank_index` | permissionless; folds Pyth updates into the bar, rolls bars, updates EWMA |
-| `crank_funding` | permissionless; accrues `k · ln(mark/index) · dt` into the funding index |
-| `liquidate` | permissionless; book fill to bankruptcy price, then ADL over a provided counterparty list |
+### 7.2 Accounts and instructions
 
-- **Floating point.** Fixed-point log math is needed: positions store cost as Σ size·ln(price).
-  Use a lookup-table or polynomial `ln`/`exp` in Q64.64.
-- **ADL.** Pro rata over *all* opposite accounts does not fit in one transaction; production
-  ADL should rank by profit × leverage and take counterparties from a crank-maintained queue.
-- **Curves, not order slabs.** Each operator's curve is evaluated in closed form at swap time,
-  instead of storing a ladder; the simulator's fine ladder is only a stand-in.
-- **Reference implementation.** `crates/core/src/book.rs` (accounts, funding, liquidation,
-  ADL) and `PropAmm` in `book_sim.rs` are the logic to port; its invariants (Σq = 0, value conservation, no
-  negative equity after liquidation) should become on-chain property tests.
+| Account | Size | Contents |
+|---|---|---|
+| `Market` | 384 B | parameters, index (variance EWMA, last Pyth price), mark, funding index, open interest, insurance, treasury |
+| `Trader` | 120 B | cash, q, Σ size·ln(price) cost, funding snapshot, long/short limit reservations |
+| `Operator` | 160 B | bond, curve (fair, half-spread, impact, inventory limit), last update slot, status |
+| `LimitOrder` | 112 B | side, size, filled, limit, expiry, reservation |
+
+Instructions: `initialize_market`, `update_params`, `set_paused`, `create_trader`, `deposit`,
+`withdraw`, `register_operator`, `update_curve`, `request_unbond`, `complete_unbond`, `swap`,
+`place_limit_order`, `cancel_limit_order`, `execute_limit_order`, `crank_index`,
+`crank_funding`, `crank_mark`, `liquidate`, `withdraw_treasury`.
+
+### 7.3 Departures from the sketch
+
+- **No separate index account.** The index state lives in `Market`, and `crank_index` folds each
+  new Pyth price directly (§6, item 1).
+- **Routing on-chain.** `swap` takes up to 8 operators and routes in 64 chunks by best marginal
+  price; an 8-operator swap needs about 530k compute units, so clients request 1.4M.
+- **Mark** is the median centre of fresh curves (§5.1), refreshed by trades and `crank_mark`.
+- **ADL counterparties** are supplied by the caller (the keeper ranks in-profit opposite traders)
+  and closed pro rata; operators are never auto-deleveraged.
+- **Operators** are permissionless: 1,000 USDC bond, 10,000 USDC minimum capital, curves stale
+  after 10 slots, 1-day unbonding, and they can re-register after unbonding.
+- **Limit orders** reserve margin net of the position (a reducing order needs no extra
+  collateral), are filled by any keeper for a 1bp fee, and anyone can close an expired one.
+
+### 7.4 Fees and the insurance fund
+
+The local stack showed retail losses are dominated by turnover costs, not by the counterparty.
+In an early run, bots churned $27M on $1M of deposits in an hour; traders lost $21.8k, of which
+$13.6k was fees and $8.2k went to makers, and only 2 of 14 traders ended in profit. Fees were also
+routed entirely to the treasury, leaving the insurance fund empty.
+
+The built protocol therefore:
+
+- charges a **2bp** taker fee (down from 5bp);
+- pays fees into the **insurance fund until it holds 5% of open interest** (`insurance_target_bps`),
+  and only then to the treasury.
+
+Safety rests on maintenance margin, liquidation to the bankruptcy price and ADL, not on fees; the
+insurance fund absorbs negative equity before anyone is auto-deleveraged. With realistic bot
+behaviour (positions held minutes to hours, 2–4× deposits of turnover per hour), a 30-minute run
+cost traders $133 in fees, all to insurance, and 8 of 14 traders were in profit.
 
 ## 8. Reproducing the results
+
+On-chain system (needs Surfpool, the Solana CLI, `dx`, Node and pnpm; see the README):
+
+```bash
+just test-all        # unit, LiteSVM, clippy, wasm, then Surfpool integration and browser tests
+just sim             # local stack with 4 makers, 12 bot traders and a moving Pyth price
+```
+
+Simulator:
 
 ```bash
 cargo test --workspace
