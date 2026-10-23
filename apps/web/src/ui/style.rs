@@ -223,4 +223,22 @@ svg.an-chart text, svg.an-hist text { fill:var(--muted); font-family:var(--font-
   .tt .docs-toc a { border-left:none; padding:2px 0; }
   .docs-body { padding:16px 16px 32px; }
 }
+
+/* flow of funds (where trader PnL went) */
+.fof-sentence { margin:0; padding:10px 12px 6px; font-size:13px; line-height:18px; color:var(--ink); }
+.fof-bar { display:flex; height:10px; margin:4px 12px; border-radius:2px; overflow:hidden; background:var(--rule); }
+.fof-seg { display:block; height:100%; min-width:2px; }
+.fof-seg.fees, .fof-sw.fees { background:var(--loss); }
+.fof-seg.makers, .fof-sw.makers { background:var(--loss); opacity:.45; }
+.fof-legend { display:flex; flex-wrap:wrap; gap:4px 16px; padding:2px 12px 6px; font-size:12px; align-items:center; }
+.fof-legend > span { display:inline-flex; align-items:center; gap:6px; }
+.fof-sw { display:inline-block; width:10px; height:10px; border-radius:2px; }
+.tt .fof-table { width:100%; border-collapse:collapse; }
+.tt .fof-table th { border-top:1px solid var(--rule); vertical-align:top; text-align:left; font-weight:400; letter-spacing:0; text-transform:none; white-space:normal; }
+.tt .fof-table th .lbl { display:block; }
+.fof-note { display:block; font-size:11px; line-height:14px; }
+.tt .fof-table td { text-align:right; vertical-align:top; white-space:nowrap; }
+.tt .fof-table tr.fof-total th, .tt .fof-table tr.fof-total td { border-top:2px solid var(--muted); }
+.tt .fof-table tr.fof-total .lbl { color:var(--ink); }
+.tt .fof-cp tr:first-child th { padding-top:14px; }
 "#;

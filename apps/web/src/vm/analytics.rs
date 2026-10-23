@@ -248,6 +248,10 @@ pub struct LeaderRow {
     pub pnl: String,
     pub pnl_pct: String,
     pub gain: bool,
+    /// PnL with this account's taker fees added back.
+    pub pnl_before_fees: String,
+    pub before_fees_gain: bool,
+    pub fees: String,
     pub position: String,
     /// None when flat.
     pub position_side: Option<Side>,
@@ -276,6 +280,9 @@ pub fn leaderboard_rows(rows: &[LeaderboardRowJson], now: i64) -> Vec<LeaderRow>
                 pnl: money_signed(r.pnl_usdc),
                 pnl_pct: pct_signed(r.pnl_pct, 2),
                 gain: r.pnl_usdc >= 0.0,
+                pnl_before_fees: money_signed(r.pnl_before_fees_usdc),
+                before_fees_gain: r.pnl_before_fees_usdc >= 0.0,
+                fees: money(r.fees_paid_usdc),
                 position: match side {
                     Some(s) => format!("{} {}", money_compact(r.q_usdc.abs()), if s == Side::Long { "long" } else { "short" }),
                     None => DASH.into(),
@@ -292,6 +299,97 @@ pub fn leaderboard_rows(rows: &[LeaderboardRowJson], now: i64) -> Vec<LeaderRow>
 /// Trader (non-operator) PnLs for the distribution.
 pub fn trader_pnls(rows: &[LeaderboardRowJson]) -> Vec<f64> {
     rows.iter().filter(|r| !r.is_operator).map(|r| r.pnl_usdc).collect()
+}
+
+/// Colour of a flow-of-funds amount.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tone {
+    Gain,
+    Loss,
+    Plain,
+}
+
+impl Tone {
+    pub fn signed(v: f64) -> Tone {
+        if v >= 0.0 { Tone::Gain } else { Tone::Loss }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlowLine {
+    pub label: &'static str,
+    pub value: String,
+    pub tone: Tone,
+    /// Short muted explanation.
+    pub note: &'static str,
+    /// Result line (drawn with a rule above it).
+    pub total: bool,
+}
+
+/// One segment of the "where trader losses went" bar; `pct` of the bar width.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlowSeg {
+    pub label: &'static str,
+    pub value: String,
+    pub pct: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlowOfFunds {
+    /// Before fees, minus fees, equals trader PnL.
+    pub traders: Vec<FlowLine>,
+    /// Makers, insurance fund, treasury, liquidation penalties.
+    pub counterparties: Vec<FlowLine>,
+    /// Trader outflows (fees, net to makers); empty when there are none.
+    pub bar: Vec<FlowSeg>,
+    pub sentence: String,
+}
+
+/// "Where trader PnL went", from the summary; None until it arrives.
+pub fn flow_of_funds(s: Option<&AnalyticsSummaryJson>) -> Option<FlowOfFunds> {
+    let s = s?;
+    let line = |label, v: f64, tone, note, total| FlowLine { label, value: money_signed(v), tone, note, total };
+    let before = s.trader_pnl_before_fees_usdc;
+    let fees = s.trader_fees_paid_usdc.max(0.0);
+    let pnl = s.total_trader_pnl_usdc;
+    let traders = vec![
+        line("Trader PnL before fees", before, Tone::signed(before), "what trading itself made or lost", false),
+        line("Fees paid", -fees, if fees > 0.0 { Tone::Loss } else { Tone::Plain }, "taker fees on every fill", false),
+        line("Trader PnL", pnl, Tone::signed(pnl), "what traders actually kept", true),
+    ];
+    let plain = |label, v: f64, note| FlowLine { label, value: money(v), tone: Tone::Plain, note, total: false };
+    let counterparties = vec![
+        line("Makers' PnL", s.maker_pnl_usdc, Tone::signed(s.maker_pnl_usdc), "the other side of trader PnL before fees", false),
+        plain("Insurance fund", s.insurance_usdc, "fees fill this first, up to a target"),
+        plain("Treasury", s.treasury_usdc, "fees beyond the insurance target"),
+        plain("Liquidation penalties", s.liquidation_penalties_usdc, "paid by liquidated traders"),
+    ];
+    let to_makers = (-before).max(0.0);
+    let out = fees + to_makers;
+    let bar = if out > 0.0 {
+        [("Fees", fees), ("Net to makers", to_makers)]
+            .into_iter()
+            .filter(|(_, v)| *v > 0.0)
+            .map(|(label, v)| FlowSeg { label, value: money_compact(v), pct: v / out * 100.0 })
+            .collect()
+    } else {
+        vec![]
+    };
+    Some(FlowOfFunds { traders, counterparties, bar, sentence: flow_sentence(before, fees, pnl) })
+}
+
+/// One plain-English sentence about where trader PnL went.
+pub fn flow_sentence(before: f64, fees: f64, pnl: f64) -> String {
+    let c = money_compact;
+    if fees.abs() < 0.005 && before.abs() < 0.005 {
+        return "No trader fees or PnL yet.".into();
+    }
+    let total = if pnl < 0.0 { format!("Traders lost {} in total", c(-pnl)) } else { format!("Traders made {} in total", c(pnl)) };
+    if before < 0.0 {
+        format!("{total}: they paid {} in fees and {} net to makers.", c(fees), c(-before))
+    } else {
+        format!("{total}: they won {} net from makers and paid {} in fees.", c(before), c(fees))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

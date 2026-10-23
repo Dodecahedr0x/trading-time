@@ -1,6 +1,13 @@
 //! Drives bot wallets and the Pyth price on a Surfpool stack.
 
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result};
 use rand::{Rng, SeedableRng};
@@ -19,7 +26,7 @@ use tradingtime_math::{Side, from_f64};
 
 use crate::{
     price::{PriceDriver, parse_prices},
-    strategy::{Action, Observation, Persona, closing_side, decide},
+    strategy::{Action, BotState, Observation, Persona, closing_side, decide},
 };
 
 const SOL: u64 = 1_000_000_000;
@@ -48,6 +55,7 @@ struct Bot {
     start_equity: f64,
     rng: ChaCha8Rng,
     next_order_id: u64,
+    state: BotState,
 }
 
 fn ata(owner: &Pubkey) -> Pubkey {
@@ -119,6 +127,7 @@ async fn setup(cfg: &Config, rng: &mut ChaCha8Rng) -> Result<Vec<Bot>> {
             ata,
             start_equity: start_equity.max(1.0),
             rng: ChaCha8Rng::seed_from_u64(cfg.seed.wrapping_add(i as u64 * 7919)),
+            state: BotState::default(),
             next_order_id: (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() as u64) * 100 + i as u64,
         });
     }
@@ -138,6 +147,10 @@ struct Tick {
     ops: Vec<Pubkey>,
     orders: Vec<(Pubkey, LimitOrder)>,
     history: Vec<f64>,
+    /// Bot clock: seconds since the loop started, and since the previous tick.
+    clock_secs: f64,
+    tick_secs: f64,
+    storm: Option<bool>,
 }
 
 fn slippage_limit(mark_ln: i128, side: Side, pct: f64) -> i128 {
@@ -155,6 +168,9 @@ async fn act(bot: &mut Bot, t: &Tick) -> Result<Option<String>> {
     let equity = tradingtime_math::position::equity(&tr.position(), mark).map_or(0.0, usdc);
     let mine: Vec<&LimitOrder> = t.orders.iter().map(|(_, o)| o).filter(|o| o.owner == owner.to_bytes()).collect();
     let obs = Observation {
+        now_secs: t.clock_secs,
+        tick_secs: t.tick_secs,
+        storm: t.storm,
         mark_secs: ln_to_secs(mark),
         index_secs: ln_to_secs(t.market.index_ln.get()),
         mark_history: t.history.clone(),
@@ -165,7 +181,7 @@ async fn act(bot: &mut Bot, t: &Tick) -> Result<Option<String>> {
         wallet_usdc: wallet_usdc(&bot.ctx, &bot.ata).await,
         has_quotes: !t.ops.is_empty(),
     };
-    let Some(action) = decide(bot.persona, &obs, bot.start_equity, &mut bot.rng) else { return Ok(None) };
+    let Some(action) = decide(bot.persona, &obs, &mut bot.state, bot.start_equity, &mut bot.rng) else { return Ok(None) };
     let ixs = match &action {
         Action::Market { side, size_usdc } => {
             let size = usdc_base(*size_usdc);
@@ -191,7 +207,8 @@ async fn act(bot: &mut Bot, t: &Tick) -> Result<Option<String>> {
     Ok(Some(format!("{action:?}")))
 }
 
-async fn drive_price(cfg: &Config, path: PathBuf, seed: u64) -> Result<()> {
+/// Writes the replayed price to Pyth and publishes the volatility regime to `storm` for informed bots.
+async fn drive_price(cfg: &Config, path: PathBuf, seed: u64, storm: Arc<AtomicBool>) -> Result<()> {
     let ctx = Ctx::new(cfg.rpc.clone(), Keypair::new());
     let m = ctx.market().await?;
     let feed = Pubkey::new_from_array(m.pyth_feed);
@@ -206,6 +223,7 @@ async fn drive_price(cfg: &Config, path: PathBuf, seed: u64) -> Result<()> {
     loop {
         timer.tick().await;
         let p = d.step(cfg.pyth_every_secs as usize, &mut rng);
+        storm.store(d.storm(), Ordering::Relaxed);
         let now = match chain_now(&ctx).await {
             Ok(n) => n,
             Err(e) => {
@@ -223,11 +241,13 @@ async fn drive_price(cfg: &Config, path: PathBuf, seed: u64) -> Result<()> {
 pub async fn run(cfg: Config) -> Result<()> {
     let mut rng = ChaCha8Rng::seed_from_u64(cfg.seed);
     let mut bots = setup(&cfg, &mut rng).await?;
+    let storm = Arc::new(AtomicBool::new(false));
     let pyth = cfg.pyth_replay.clone().map(|p| {
         let cfg = Config { rpc: cfg.rpc.clone(), keys_dir: cfg.keys_dir.clone(), pyth_replay: None, ..cfg };
         let seed = cfg.seed;
+        let storm = storm.clone();
         tokio::spawn(async move {
-            if let Err(e) = drive_price(&cfg, p, seed).await {
+            if let Err(e) = drive_price(&cfg, p, seed, storm).await {
                 tracing::error!("price driver stopped: {e:#}");
             }
         })
@@ -238,9 +258,13 @@ pub async fn run(cfg: Config) -> Result<()> {
     let mut timer = tokio::time::interval(Duration::from_millis(cfg.tick_ms.max(50)));
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let (mut sent, mut failed) = (0u64, 0u64);
-    let mut last_report = std::time::Instant::now();
+    let mut last_report = Instant::now();
+    let started = Instant::now();
+    let mut last_tick = started;
     loop {
         timer.tick().await;
+        let tick_secs = last_tick.elapsed().as_secs_f64();
+        last_tick = Instant::now();
         let snapshot = async {
             let market = reader.market().await?;
             let slot = reader.client.get_slot().await?;
@@ -260,7 +284,16 @@ pub async fn run(cfg: Config) -> Result<()> {
         if history.len() > HISTORY {
             history.remove(0);
         }
-        let tick = Tick { market, now, ops, orders, history: history.clone() };
+        let tick = Tick {
+            market,
+            now,
+            ops,
+            orders,
+            history: history.clone(),
+            clock_secs: started.elapsed().as_secs_f64(),
+            tick_secs,
+            storm: pyth.is_some().then(|| storm.load(Ordering::Relaxed)),
+        };
         for (i, bot) in bots.iter_mut().enumerate() {
             match act(bot, &tick).await {
                 Ok(Some(what)) => {
@@ -276,7 +309,7 @@ pub async fn run(cfg: Config) -> Result<()> {
         }
         if last_report.elapsed() >= Duration::from_secs(30) {
             tracing::info!(sent, failed, mark_secs = format!("{:.0}", history.last().copied().unwrap_or(0.0)), "activity");
-            last_report = std::time::Instant::now();
+            last_report = Instant::now();
         }
         if pyth.as_ref().is_some_and(|h| h.is_finished()) {
             anyhow::bail!("price driver exited");

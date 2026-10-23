@@ -91,7 +91,8 @@ pub struct FillCtx {
     pub ts: i64,
 }
 
-/// Fills the taker against the routed operators and charges `fee_total` to the treasury.
+/// Fills the taker against the routed operators and charges `fee_total` to the insurance fund (up to its
+/// target share of open interest), then the treasury.
 pub fn apply_route(route: &Route, f: &Fresh, taker: &mut Trader, p: &mut Pairs, m: &mut Market, c: &FillCtx) -> R {
     let fills = route.fills();
     let mut fee_left = c.fee_total;
@@ -127,7 +128,9 @@ pub fn apply_route(route: &Route, f: &Fresh, taker: &mut Trader, p: &mut Pairs, 
         );
     }
     add_cash(taker, -(c.fee_total as i64))?;
-    m.treasury = ovf(m.treasury.checked_add(c.fee_total))?;
+    let (to_insurance, to_treasury) = m.params.split_fee(c.fee_total, m.insurance, m.long_q.max(m.short_q));
+    m.insurance = ovf(m.insurance.checked_add(to_insurance))?;
+    m.treasury = ovf(m.treasury.checked_add(to_treasury))?;
     m.total_cash = m.total_cash.saturating_sub(c.fee_total);
     Ok(())
 }

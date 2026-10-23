@@ -710,6 +710,12 @@ impl Store {
         Ok(out)
     }
 
+    /// Σ liquidation penalties across all liquidations.
+    pub fn liquidation_penalties_total(&self) -> Result<u64> {
+        let v: i64 = self.conn.query_row("SELECT COALESCE(SUM(penalty), 0) FROM liquidations", [], |r| r.get(0))?;
+        Ok(v as u64)
+    }
+
     pub fn liquidations_since(&self, since: i64) -> Result<u64> {
         let n: i64 = self.conn.query_row("SELECT COUNT(*) FROM liquidations WHERE ts >= ?1", [since], |r| r.get(0))?;
         Ok(n as u64)

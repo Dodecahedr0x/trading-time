@@ -3,7 +3,7 @@ use super::Side;
 use crate::types::{QuotesJson, TraderJson};
 use tradingtime_interface::Fx;
 
-pub const TAKER_FEE_BPS: u16 = 5;
+pub const TAKER_FEE_BPS: u16 = tradingtime_interface::Params::DEFAULT.taker_fee_bps;
 pub const MAINTENANCE_BPS: u16 = 500;
 pub const MAX_LEVERAGE_BPS: u16 = 10_000;
 /// Slippage tolerance for market orders, applied to the worst level walked (ln space).

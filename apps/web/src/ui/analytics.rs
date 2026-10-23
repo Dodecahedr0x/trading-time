@@ -136,6 +136,7 @@ pub fn Analytics() -> Element {
                 }
                 div { class: "an-col",
                     PnlDistribution { pnls: trader_pnls(&d.leaders) }
+                    FlowOfFundsPanel { summary: d.summary.clone() }
                     TradesFeed { rows: d.trades.clone(), now: d.now }
                     Liquidations { rows: d.liqs.clone(), now: d.now }
                 }
@@ -246,7 +247,7 @@ fn Leaderboard(c: Controls, rows: Vec<LeaderboardRowJson>, now: i64) -> Element 
             }
             div { class: "scroll",
                 table {
-                    thead { tr { th { "#" } th { "Account" } th { "Equity" } th { "PnL" } th { "PnL %" } th { "Position" } th { "Volume" } th { "Trades" } th { "Last trade" } } }
+                    thead { tr { th { "#" } th { "Account" } th { "Equity" } th { "PnL" } th { "Before fees" } th { "Fees" } th { "PnL %" } th { "Position" } th { "Volume" } th { "Trades" } th { "Last trade" } } }
                     tbody {
                         for r in rows {
                             tr { "data-testid": "leaderboard-row",
@@ -257,6 +258,8 @@ fn Leaderboard(c: Controls, rows: Vec<LeaderboardRowJson>, now: i64) -> Element 
                                 }
                                 td { "{r.equity}" }
                                 td { class: pnl_cls(r.gain), "{r.pnl}" }
+                                td { class: pnl_cls(r.before_fees_gain), "{r.pnl_before_fees}" }
+                                td { class: "muted", "{r.fees}" }
                                 td { class: pnl_cls(r.gain), "{r.pnl_pct}" }
                                 td { class: r.position_side.map(side_cls).unwrap_or("muted"), "{r.position}" }
                                 td { "{r.volume}" } td { "{r.trades}" }
@@ -328,6 +331,66 @@ fn PnlDistribution(pnls: Vec<f64>) -> Element {
                     text { x: "{HW / 2.0}", y: "{HH + 15.0}", text_anchor: "middle", "$0" }
                     text { x: "{HW}", y: "{HH + 15.0}", text_anchor: "end", "{hi}" }
                 }
+            }
+        }
+    }
+}
+
+fn tone_cls(t: Tone) -> &'static str {
+    match t {
+        Tone::Gain => "num gain",
+        Tone::Loss => "num loss",
+        Tone::Plain => "num",
+    }
+}
+
+#[component]
+fn FlowLines(lines: Vec<FlowLine>) -> Element {
+    rsx! {
+        for l in lines {
+            tr { class: if l.total { "fof-total" } else { "" },
+                th { scope: "row", span { class: "lbl", "{l.label}" } span { class: "fof-note muted", "{l.note}" } }
+                td { class: tone_cls(l.tone), "{l.value}" }
+            }
+        }
+    }
+}
+
+#[component]
+fn FlowOfFundsPanel(summary: Option<AnalyticsSummaryJson>) -> Element {
+    let f = flow_of_funds(summary.as_ref());
+    rsx! {
+        div { class: "panel", "data-testid": "flow-of-funds",
+            div { class: "an-head", span { class: "label", "Where trader PnL went" } }
+            if let Some(f) = f {
+                p { class: "fof-sentence", "{f.sentence}" }
+                if !f.bar.is_empty() {
+                    div { class: "fof-bar", role: "img", "aria-label": "Trader outflows",
+                        for (i, seg) in f.bar.iter().enumerate() {
+                            span { class: if i == 0 { "fof-seg fees" } else { "fof-seg makers" },
+                                style: "width:{seg.pct:.2}%", title: "{seg.label}: {seg.value}" }
+                        }
+                    }
+                    div { class: "fof-legend",
+                        for (i, seg) in f.bar.iter().enumerate() {
+                            span {
+                                span { class: if i == 0 { "fof-sw fees" } else { "fof-sw makers" } }
+                                span { class: "lbl", "{seg.label}" }
+                                " "
+                                span { class: "num", "{seg.value}" }
+                            }
+                        }
+                    }
+                }
+                table { class: "fof-table",
+                    tbody { FlowLines { lines: f.traders } }
+                    tbody { class: "fof-cp",
+                        tr { th { colspan: "2", span { class: "lbl", "Counterparties" } } }
+                        FlowLines { lines: f.counterparties }
+                    }
+                }
+            } else {
+                div { class: "empty", "Waiting for the indexer" }
             }
         }
     }

@@ -89,7 +89,9 @@ pub struct Params {
     pub max_leverage_bps: u16,
     pub keeper_fee_bps: u16,
     pub band_bps: u16,
-    pub _pad0: u32,
+    /// Taker fees fill the insurance fund up to this share of open interest (one side), then go to the treasury.
+    pub insurance_target_bps: u16,
+    pub _pad0: u16,
     pub index_half_life_secs: u32,
     pub funding_period_secs: u32,
     pub index_min_secs: u32,
@@ -105,13 +107,22 @@ pub struct Params {
 }
 
 impl Params {
+    /// Splits a taker fee: (to insurance, to treasury). Insurance is topped up to
+    /// `insurance_target_bps` of open interest first; the rest goes to the treasury.
+    pub fn split_fee(&self, fee: u64, insurance: u64, open_interest: u64) -> (u64, u64) {
+        let target = (open_interest as u128 * self.insurance_target_bps as u128 / 10_000) as u64;
+        let to_insurance = fee.min(target.saturating_sub(insurance));
+        (to_insurance, fee - to_insurance)
+    }
+
     pub const DEFAULT: Params = Params {
-        taker_fee_bps: 5,
+        taker_fee_bps: 2,
         liq_fee_bps: 100,
         maintenance_bps: 500,
         max_leverage_bps: 10_000,
         keeper_fee_bps: 1,
         band_bps: 100,
+        insurance_target_bps: 500,
         _pad0: 0,
         index_half_life_secs: 604_800,
         funding_period_secs: 86_400,
@@ -135,6 +146,7 @@ impl Params {
             && (1_000..=50_000).contains(&self.max_leverage_bps)
             && self.keeper_fee_bps <= 20
             && (10..=1_000).contains(&self.band_bps)
+            && self.insurance_target_bps <= 10_000
             && (3_600..=2_592_000).contains(&self.index_half_life_secs)
             && (3_600..=604_800).contains(&self.funding_period_secs)
             && self.index_min_secs >= 1
@@ -620,6 +632,18 @@ impl TtError {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn taker_fees_fill_insurance_before_treasury() {
+        let p = Params::DEFAULT;
+        // Target 5% of 1,000,000 OI = 50,000.
+        assert_eq!(p.split_fee(100, 0, 1_000_000), (100, 0));
+        assert_eq!(p.split_fee(100, 49_950, 1_000_000), (50, 50));
+        assert_eq!(p.split_fee(100, 60_000, 1_000_000), (0, 100));
+        assert_eq!(p.split_fee(100, 0, 0), (0, 100));
+        assert!(Params { insurance_target_bps: 10_001, ..p }.validate().is_err());
+    }
+
     extern crate std;
     use super::*;
     use core::mem::size_of;

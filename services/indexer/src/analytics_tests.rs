@@ -160,6 +160,10 @@ async fn summary_route() {
             "traders_in_profit",
             "total_trader_pnl_usdc",
             "total_maker_pnl_usdc",
+            "trader_pnl_before_fees_usdc",
+            "trader_fees_paid_usdc",
+            "maker_pnl_usdc",
+            "liquidation_penalties_usdc",
             "updated_ts",
         ],
     );
@@ -264,6 +268,7 @@ async fn leaderboard_pnl_and_filters() {
             "equity_usdc",
             "net_deposits_usdc",
             "pnl_usdc",
+            "pnl_before_fees_usdc",
             "pnl_pct",
             "upnl_usdc",
             "q_usdc",
@@ -285,6 +290,7 @@ async fn leaderboard_pnl_and_filters() {
     assert_eq!(f(&a["q_usdc"]), 1_000.0);
     assert_eq!((f(&a["volume_usdc"]), a["trades"].as_u64()), (1_700.0, Some(3)));
     assert!(close(f(&a["fees_paid_usdc"]), 0.85));
+    assert!(close(f(&a["pnl_before_fees_usdc"]), equity - 1_000.0 + 0.85));
     assert_eq!(a["last_trade_ts"], NOW - 100);
     assert_eq!(a["is_operator"], false);
     let b = &v[3];
@@ -420,4 +426,31 @@ async fn liquidations_route() {
     let (_, v) = get(&s, "/v1/analytics/liquidations?limit=1").await;
     assert_eq!(v.as_array().unwrap().len(), 1);
     assert_eq!(get(&s, "/v1/analytics/liquidations?limit=501").await.0, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn summary_fees_vs_pnl_breakdown() {
+    let (_, v) = get(&seeded(), "/v1/analytics/summary").await;
+    // Taker fees of non-operators only: A 0.85 (incl. the PDA-named fill), B 0.5 (ADL is free), C 0.15.
+    assert!(close(f(&v["trader_fees_paid_usdc"]), 1.5), "{v}");
+    let pnl = f(&v["total_trader_pnl_usdc"]);
+    assert!(close(f(&v["trader_pnl_before_fees_usdc"]), pnl + 1.5), "{v}");
+    assert_eq!(f(&v["maker_pnl_usdc"]), f(&v["total_maker_pnl_usdc"]));
+    // Two liquidations at 1 USDC penalty each, regardless of age.
+    assert_eq!(f(&v["liquidation_penalties_usdc"]), 2.0);
+
+    // An operator's own taker fills do not count as trader fees, and its row's
+    // before-fees pnl adds back its own fees.
+    let s = seeded();
+    {
+        let mut st = s.store.lock().unwrap();
+        fill(&mut st, "f7", M, [9; 32], 0, TRADE_SWAP, 2_000 * USDC, NOW - 10);
+    }
+    let (_, v) = get(&s, "/v1/analytics/summary").await;
+    assert!(close(f(&v["trader_fees_paid_usdc"]), 1.5), "{v}");
+    assert!(close(f(&v["fees_total_usdc"]), 2.5), "{v}");
+    let (_, v) = get(&s, "/v1/analytics/leaderboard?makers=true").await;
+    let m = &v[0];
+    assert_eq!(m["is_operator"], true);
+    assert!(close(f(&m["pnl_before_fees_usdc"]), f(&m["pnl_usdc"]) + 1.0), "{m}");
 }

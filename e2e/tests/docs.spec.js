@@ -12,7 +12,7 @@ test('docs page explains the product and deep-links to sections', async ({ page 
   const sections = page.getByTestId('docs-section');
   expect(await sections.count()).toBeGreaterThanOrEqual(10);
   await expect(page.getByRole('heading', { name: 'Funding' })).toBeVisible();
-  await expect(page.getByTestId('docs-page')).toContainText('5 bp');
+  await expect(page.getByTestId('docs-page')).toContainText('2 bp');
 
   await page.getByTestId('docs-toc').getByRole('link', { name: 'Margin and liquidation' }).click();
   await expect(page).toHaveURL(/#\/docs\/margin$/);

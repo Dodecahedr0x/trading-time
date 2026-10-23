@@ -138,10 +138,11 @@ fn trader(q: f64, equity: f64, reserved: f64) -> TraderJson {
 
 #[test]
 fn ticket_math() {
-    assert!(close(max_size(None, 1000.0, Side::Long), 1000.0 / 1.0005, 1e-9));
+    let r = TAKER_FEE_BPS as f64 / 10_000.0;
+    assert!(close(max_size(None, 1000.0, Side::Long), 1000.0 / (1.0 + r), 1e-9));
     let t = trader(2000.0, 5000.0, 1000.0);
-    assert!(close(max_size(Some(&t), 0.0, Side::Long), 2000.0 / 1.0005, 1e-9));
-    assert!(close(max_size(Some(&t), 0.0, Side::Short), 6000.0 / 1.0005, 1e-9));
+    assert!(close(max_size(Some(&t), 0.0, Side::Long), 2000.0 / (1.0 + r), 1e-9));
+    assert!(close(max_size(Some(&t), 0.0, Side::Short), 6000.0 / (1.0 + r), 1e-9));
     assert_eq!(max_size(Some(&trader(6000.0, 5000.0, 0.0)), 0.0, Side::Long), 0.0);
     assert_eq!(preset(1999.0005, 100), 1999.0);
     assert_eq!(preset(1999.0005, 25), 499.0);
@@ -151,7 +152,7 @@ fn ticket_math() {
     let e = estimate_market(&quotes(), Side::Long, 4000.0).unwrap();
     assert!(close(e.entry_secs, 3614.9965, 1e-3));
     assert_eq!(e.worst_secs, 3620.0);
-    assert!(close(e.fee_usdc, 2.0, 1e-9));
+    assert!(close(e.fee_usdc, 4000.0 * r, 1e-9));
     assert!(close(e.limit_secs, 3656.3816, 1e-3));
     let s = estimate_market(&quotes(), Side::Short, 2000.0).unwrap();
     assert!(close(s.entry_secs, 3584.9965, 1e-3));
@@ -164,21 +165,21 @@ fn ticket_math() {
     assert!(close(fs.limit_secs, 3600.0 / 1.05, 1e-9));
     assert_eq!(estimate_market(&QuotesJson::default(), Side::Long, 10.0), None);
 
-    assert!(close(deposit_needed(None, Side::Long, OrderType::Market, 5000.0), 5052.5, 1e-9));
-    assert!(close(deposit_needed(Some(&trader(0.0, 5000.0, 0.0)), Side::Long, OrderType::Market, 5000.0), 52.5, 1e-9));
+    assert!(close(deposit_needed(None, Side::Long, OrderType::Market, 5000.0), 5000.0 * (1.0 + r + 0.01), 1e-9));
+    assert!(close(deposit_needed(Some(&trader(0.0, 5000.0, 0.0)), Side::Long, OrderType::Market, 5000.0), 5000.0 * (r + 0.01), 1e-9));
     assert_eq!(deposit_needed(Some(&trader(2000.0, 5000.0, 0.0)), Side::Short, OrderType::Market, 3000.0), 0.0);
     // Limit orders net against the position: a 3000 short on a 2000 long needs max(2000, 1000) + fee.
     assert_eq!(deposit_needed(Some(&trader(2000.0, 5000.0, 0.0)), Side::Short, OrderType::Limit, 3000.0), 0.0);
     let full = trader(5000.0, 5000.0, 0.0);
-    assert!(close(deposit_needed(Some(&full), Side::Short, OrderType::Limit, 5000.0), 2.5, 1e-9));
-    assert!(close(deposit_needed(Some(&full), Side::Short, OrderType::Limit, 15_000.0), 5007.5, 1e-9));
-    assert!(close(deposit_needed(Some(&full), Side::Long, OrderType::Limit, 1000.0), 1000.5, 1e-9));
+    assert!(close(deposit_needed(Some(&full), Side::Short, OrderType::Limit, 5000.0), 5000.0 * r, 1e-9));
+    assert!(close(deposit_needed(Some(&full), Side::Short, OrderType::Limit, 15_000.0), 5000.0 + 15_000.0 * r, 1e-9));
+    assert!(close(deposit_needed(Some(&full), Side::Long, OrderType::Limit, 1000.0), 1000.0 + 1000.0 * r, 1e-9));
     // Resting orders: the larger side's exposure is what must be covered.
     let resting = TraderJson { reserved_short_usdc: 12_000.0, ..full.clone() };
-    assert!(close(deposit_needed(Some(&resting), Side::Short, OrderType::Limit, 1000.0), 3000.5, 1e-9));
-    assert!(close(deposit_needed(Some(&resting), Side::Long, OrderType::Limit, 1000.0), 2000.5, 1e-9));
-    assert!(close(deposit_needed(Some(&resting), Side::Short, OrderType::Market, 1000.0), 3010.5, 1e-9));
-    assert!(close(deposit_needed(None, Side::Long, OrderType::Limit, 1000.0), 1000.5, 1e-9));
+    assert!(close(deposit_needed(Some(&resting), Side::Short, OrderType::Limit, 1000.0), 3000.0 + 1000.0 * r, 1e-9));
+    assert!(close(deposit_needed(Some(&resting), Side::Long, OrderType::Limit, 1000.0), 2000.0 + 1000.0 * r, 1e-9));
+    assert!(close(deposit_needed(Some(&resting), Side::Short, OrderType::Market, 1000.0), 3000.0 + 1000.0 * (r + 0.01), 1e-9));
+    assert!(close(deposit_needed(None, Side::Long, OrderType::Limit, 1000.0), 1000.0 + 1000.0 * r, 1e-9));
     assert_eq!(margin_need(1000.0, 0.0, 1500.0), 1000.0);
     assert_eq!(margin_need(1000.0, 0.0, 2500.0), 1500.0);
     assert_eq!(q_after(None, Side::Short, 100.0), -100.0);
@@ -351,6 +352,10 @@ mod analytics {
             traders_in_profit: 5,
             total_trader_pnl_usdc: -1234.5,
             total_maker_pnl_usdc: 1100.0,
+            trader_pnl_before_fees_usdc: -634.5,
+            trader_fees_paid_usdc: 600.0,
+            maker_pnl_usdc: 1100.0,
+            liquidation_penalties_usdc: 45.0,
             updated_ts: 1_792_512_680,
         }
     }
@@ -454,6 +459,8 @@ mod analytics {
                 owner: "7thnMqBXPE3QaNnDjFaEVhcMK8UBiwRaRELtZSDBkz4h".into(),
                 equity_usdc: 5200.0,
                 pnl_usdc: 200.0,
+                pnl_before_fees_usdc: 210.5,
+                fees_paid_usdc: 10.5,
                 pnl_pct: 0.04,
                 q_usdc: 3000.0,
                 volume_usdc: 21_000.0,
@@ -461,7 +468,16 @@ mod analytics {
                 last_trade_ts: Some(now - 80),
                 ..Default::default()
             },
-            LeaderboardRowJson { owner: "Op".into(), is_operator: true, pnl_usdc: -50.0, pnl_pct: -0.01, q_usdc: -1800.0, ..Default::default() },
+            LeaderboardRowJson {
+                owner: "Op".into(),
+                is_operator: true,
+                pnl_usdc: -50.0,
+                pnl_before_fees_usdc: -45.0,
+                fees_paid_usdc: 5.0,
+                pnl_pct: -0.01,
+                q_usdc: -1800.0,
+                ..Default::default()
+            },
         ];
         let r = leaderboard_rows(&rows, now);
         assert_eq!(r[0].rank, 1);
@@ -480,6 +496,77 @@ mod analytics {
         assert_eq!(r[1].position, "$1.8K short");
         assert_eq!(r[1].last_trade, "\u{2014}");
         assert_eq!(trader_pnls(&rows), [200.0]);
+        assert_eq!((r[0].pnl_before_fees.as_str(), r[0].fees.as_str()), ("+$210.50", "$10.50"));
+        assert!(r[0].before_fees_gain);
+        assert_eq!((r[1].pnl_before_fees.as_str(), r[1].fees.as_str()), ("\u{2212}$45.00", "$5.00"));
+        assert!(!r[1].before_fees_gain);
+    }
+
+    #[test]
+    fn flow_of_funds_sim_numbers() {
+        // The sim: traders lost $21.8k, $13.6k of it to fees and $8.2k to makers.
+        let s = AnalyticsSummaryJson {
+            trader_pnl_before_fees_usdc: -8_200.0,
+            trader_fees_paid_usdc: 13_600.0,
+            total_trader_pnl_usdc: -21_800.0,
+            maker_pnl_usdc: 8_150.0,
+            total_maker_pnl_usdc: 8_150.0,
+            insurance_usdc: 10_000.0,
+            treasury_usdc: 3_600.0,
+            liquidation_penalties_usdc: 420.0,
+            ..Default::default()
+        };
+        let f = flow_of_funds(Some(&s)).unwrap();
+        let t: Vec<(&str, &str, Tone, bool)> = f.traders.iter().map(|l| (l.label, l.value.as_str(), l.tone, l.total)).collect();
+        assert_eq!(
+            t,
+            [
+                ("Trader PnL before fees", "\u{2212}$8,200.00", Tone::Loss, false),
+                ("Fees paid", "\u{2212}$13,600.00", Tone::Loss, false),
+                ("Trader PnL", "\u{2212}$21,800.00", Tone::Loss, true),
+            ]
+        );
+        let c: Vec<(&str, &str, Tone)> = f.counterparties.iter().map(|l| (l.label, l.value.as_str(), l.tone)).collect();
+        assert_eq!(
+            c,
+            [
+                ("Makers' PnL", "+$8,150.00", Tone::Gain),
+                ("Insurance fund", "$10,000.00", Tone::Plain),
+                ("Treasury", "$3,600.00", Tone::Plain),
+                ("Liquidation penalties", "$420.00", Tone::Plain),
+            ]
+        );
+        assert_eq!(f.bar.len(), 2);
+        assert_eq!((f.bar[0].label, f.bar[0].value.as_str()), ("Fees", "$13.6K"));
+        assert_eq!((f.bar[1].label, f.bar[1].value.as_str()), ("Net to makers", "$8.2K"));
+        assert!(close(f.bar[0].pct, 13_600.0 / 21_800.0 * 100.0, 1e-9));
+        assert!(close(f.bar[0].pct + f.bar[1].pct, 100.0, 1e-9));
+        assert_eq!(f.sentence, "Traders lost $21.8K in total: they paid $13.6K in fees and $8.2K net to makers.");
+    }
+
+    #[test]
+    fn flow_of_funds_edge_cases() {
+        assert!(flow_of_funds(None).is_none());
+        let z = flow_of_funds(Some(&AnalyticsSummaryJson::default())).unwrap();
+        assert!(z.bar.is_empty());
+        assert_eq!(z.sentence, "No trader fees or PnL yet.");
+        assert_eq!(z.traders[1].value, "$0.00");
+        assert_eq!(z.traders[1].tone, Tone::Plain);
+        // Traders beat the makers before fees: only fees are an outflow.
+        let s = AnalyticsSummaryJson {
+            trader_pnl_before_fees_usdc: 500.0,
+            trader_fees_paid_usdc: 200.0,
+            total_trader_pnl_usdc: 300.0,
+            maker_pnl_usdc: -500.0,
+            ..Default::default()
+        };
+        let f = flow_of_funds(Some(&s)).unwrap();
+        assert_eq!(f.traders[0].tone, Tone::Gain);
+        assert_eq!(f.counterparties[0].tone, Tone::Loss);
+        assert_eq!(f.bar.len(), 1);
+        assert_eq!((f.bar[0].label, f.bar[0].pct), ("Fees", 100.0));
+        assert_eq!(f.sentence, "Traders made $300 in total: they won $500 net from makers and paid $200 in fees.");
+        assert_eq!(flow_sentence(100.0, 300.0, -200.0), "Traders lost $200 in total: they won $100 net from makers and paid $300 in fees.");
     }
 
     #[test]

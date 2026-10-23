@@ -280,12 +280,21 @@ pub fn sections() -> Vec<Section> {
                 Block::Table {
                     head: row(&["Fee", "Rate", "Goes to"]),
                     rows: vec![
-                        vec![s("Taker"), bps(p.taker_fee_bps), s("Insurance fund, then treasury")],
+                        vec![
+                            s("Taker"),
+                            bps(p.taker_fee_bps),
+                            format!("Insurance fund until it holds {} of open interest, then treasury", bps(p.insurance_target_bps)),
+                        ],
                         vec![s("Limit order fill"), bps(p.keeper_fee_bps), s("The keeper that filled it")],
                         vec![s("Liquidation"), bps(p.liq_fee_bps), s("Insurance fund")],
                     ],
                 },
                 Block::P(s("Makers earn their spread; there is no separate maker fee or rebate.")),
+                Block::P(s(
+                    "Fees are kept low on purpose: safety comes from maintenance margin, liquidation down to the \
+                     bankruptcy price and auto-deleveraging. Fees fill the **insurance fund** first, which absorbs \
+                     losses beyond a liquidated trader's deposit before anyone is auto-deleveraged.",
+                )),
             ],
         },
         Section {

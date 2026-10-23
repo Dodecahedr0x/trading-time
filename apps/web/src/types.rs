@@ -195,6 +195,13 @@ pub struct AnalyticsSummaryJson {
     pub traders_in_profit: u64,
     pub total_trader_pnl_usdc: f64,
     pub total_maker_pnl_usdc: f64,
+    /// Σ (pnl + taker fees paid) over non-operator traders.
+    pub trader_pnl_before_fees_usdc: f64,
+    /// Taker fees paid by non-operator traders (keeper fees are not tracked).
+    pub trader_fees_paid_usdc: f64,
+    /// Same as `total_maker_pnl_usdc`.
+    pub maker_pnl_usdc: f64,
+    pub liquidation_penalties_usdc: f64,
     pub updated_ts: i64,
 }
 
@@ -218,6 +225,8 @@ pub struct LeaderboardRowJson {
     pub equity_usdc: f64,
     pub net_deposits_usdc: f64,
     pub pnl_usdc: f64,
+    /// `pnl_usdc` + `fees_paid_usdc`.
+    pub pnl_before_fees_usdc: f64,
     pub pnl_pct: f64,
     pub upnl_usdc: f64,
     /// Signed: + long time, − short time.

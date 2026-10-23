@@ -158,6 +158,8 @@ fn parse_analytics_summary() {
         "insurance_usdc": 120.0, "treasury_usdc": 40.0,
         "liquidations_24h": 3, "adl_volume_24h_usdc": 1500.0,
         "traders_in_profit": 5, "total_trader_pnl_usdc": -1234.5, "total_maker_pnl_usdc": 1100.0,
+        "trader_pnl_before_fees_usdc": -634.5, "trader_fees_paid_usdc": 600.0,
+        "maker_pnl_usdc": 1100.0, "liquidation_penalties_usdc": 45.0,
         "updated_ts": 1792512680, "future_field": true }"#,
     )
     .unwrap();
@@ -166,6 +168,10 @@ fn parse_analytics_summary() {
     assert_eq!(s.volume_24h_usdc, 512000.0);
     assert_eq!(s.liquidations_24h, 3);
     assert_eq!(s.total_trader_pnl_usdc, -1234.5);
+    assert_eq!(s.trader_pnl_before_fees_usdc, -634.5);
+    assert_eq!(s.trader_fees_paid_usdc, 600.0);
+    assert_eq!(s.maker_pnl_usdc, 1100.0);
+    assert_eq!(s.liquidation_penalties_usdc, 45.0);
     assert_eq!(s.updated_ts, 1792512680);
     let empty: AnalyticsSummaryJson = parse_json("{}").unwrap();
     assert_eq!(empty, AnalyticsSummaryJson::default());
@@ -185,7 +191,7 @@ fn parse_analytics_volume_and_leaderboard() {
     assert_eq!(v[1].volume_usdc, 0.0);
     let l: Vec<LeaderboardRowJson> = parse_json(
         r#"[{ "owner": "Own", "is_operator": false, "equity_usdc": 5200.0, "net_deposits_usdc": 5000.0,
-        "pnl_usdc": 200.0, "pnl_pct": 0.04, "upnl_usdc": 150.0, "q_usdc": -3000.0,
+        "pnl_usdc": 200.0, "pnl_before_fees_usdc": 210.5, "pnl_pct": 0.04, "upnl_usdc": 150.0, "q_usdc": -3000.0,
         "volume_usdc": 21000.0, "trades": 14, "fees_paid_usdc": 10.5, "liquidations": 0,
         "last_trade_ts": 1792512600 }, {"owner": "B", "last_trade_ts": null}]"#,
     )
@@ -193,6 +199,8 @@ fn parse_analytics_volume_and_leaderboard() {
     assert_eq!(l[0].owner, "Own");
     assert_eq!(l[0].q_usdc, -3000.0);
     assert_eq!(l[0].pnl_pct, 0.04);
+    assert_eq!((l[0].pnl_before_fees_usdc, l[0].fees_paid_usdc), (210.5, 10.5));
+    assert_eq!(l[1].pnl_before_fees_usdc, 0.0);
     assert_eq!(l[0].last_trade_ts, Some(1792512600));
     assert_eq!(l[1].last_trade_ts, None);
 }

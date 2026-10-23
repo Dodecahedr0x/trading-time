@@ -50,17 +50,20 @@ pub fn summary_view(store: &Store) -> ViewResult {
     let now = store.now();
     let since = now - DAY;
     let nets = store.net_deposits()?;
+    let takers = store.taker_stats()?;
     let (mut traders, mut in_profit) = (0u64, 0u64);
-    let (mut tvl, mut trader_pnl, mut maker_pnl) = (0i128, 0i128, 0i128);
+    let (mut tvl, mut trader_pnl, mut maker_pnl, mut trader_fees) = (0i128, 0i128, 0i128, 0i128);
     for (_, t) in store.traders()? {
+        let owner = b58(&t.owner);
         let equity = equity_of(&m, &t, now);
         tvl += equity as i128;
-        let (p, _) = pnl(equity, nets.get(&b58(&t.owner)).copied().unwrap_or(0));
+        let (p, _) = pnl(equity, nets.get(&owner).copied().unwrap_or(0));
         if t.is_operator != 0 {
             maker_pnl += p as i128;
         } else {
             traders += 1;
             trader_pnl += p as i128;
+            trader_fees += takers.get(&owner).map_or(0, |s| s.fees) as i128;
             in_profit += u64::from(p > 0);
         }
     }
@@ -88,6 +91,10 @@ pub fn summary_view(store: &Store) -> ViewResult {
         "traders_in_profit": in_profit,
         "total_trader_pnl_usdc": usdc(trader_pnl),
         "total_maker_pnl_usdc": usdc(maker_pnl),
+        "trader_pnl_before_fees_usdc": usdc(trader_pnl + trader_fees),
+        "trader_fees_paid_usdc": usdc(trader_fees),
+        "maker_pnl_usdc": usdc(maker_pnl),
+        "liquidation_penalties_usdc": usdc(store.liquidation_penalties_total()? as i128),
         "updated_ts": now,
     }))
 }
@@ -145,6 +152,7 @@ pub fn leaderboard_view(store: &Store, sort: Sort, makers: bool, limit: usize) -
                 "equity_usdc": usdc(d.equity as i128),
                 "net_deposits_usdc": usdc(net as i128),
                 "pnl_usdc": usdc(p as i128),
+                "pnl_before_fees_usdc": usdc(p as i128 + st.fees as i128),
                 "pnl_pct": pct,
                 "upnl_usdc": usdc(d.upnl as i128),
                 "q_usdc": usdc(t.q as i128),

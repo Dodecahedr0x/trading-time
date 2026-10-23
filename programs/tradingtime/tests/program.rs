@@ -197,7 +197,7 @@ fn scenario_swap() {
     let fills: Vec<TradeEvent> = decoded(&meta, TAG_TRADE);
     assert_eq!(fills.len(), 2, "routes across both curves");
     assert_eq!(fills.iter().map(|f| f.size).sum::<u64>(), 5_000 * USDC);
-    let fee = 5_000 * USDC * 5 / 10_000;
+    let fee = 5_000 * USDC * Params::DEFAULT.taker_fee_bps as u64 / 10_000;
     assert_eq!(fills.iter().map(|f| f.fee).sum::<u64>(), fee);
     assert!(fills.iter().all(|f| f.kind == TRADE_SWAP && f.trader == t.key().to_bytes()));
     let tr = e.trader(&t.key());
@@ -207,7 +207,8 @@ fn scenario_swap() {
     assert!(qa < 0 && qb < 0);
     assert_eq!(tr.cash, (10_000 * USDC - fee) as i64);
     let m = e.market();
-    assert_eq!((m.treasury, m.long_q, m.short_q), (fee, 5_000 * USDC, 5_000 * USDC));
+    // Insurance is below its target (5% of open interest), so the whole fee funds it.
+    assert_eq!((m.insurance, m.treasury, m.long_q, m.short_q), (fee, 0, 5_000 * USDC, 5_000 * USDC));
     assert_eq!(m.mark_updated_ts, e.ts);
     let avg = to_f(tr.cost.get()) / tr.q as f64;
     assert!(avg > 3600f64.ln() && avg < 3700f64.ln() + 0.1, "avg ln price {avg}");
@@ -217,7 +218,9 @@ fn scenario_swap() {
     let tr = e.trader(&t.key());
     assert_eq!((tr.q, tr.cost.get()), (0, 0));
     // Fair values differ, so the round trip arbitrages A against B; only fees are certain.
-    assert_eq!(e.market().treasury, 2 * fee);
+    let m = e.market();
+    assert_eq!(m.insurance + m.treasury, 2 * fee);
+    assert!(m.insurance <= fee.max(m.long_q * Params::DEFAULT.insurance_target_bps as u64 / 10_000));
     let m = e.market();
     let qa = e.trader(&a.key()).q;
     assert_eq!(qa + e.trader(&b.key()).q, 0);
@@ -462,6 +465,9 @@ fn scenario_liquidation() {
     shift_mark(&mut e, &a, &b, target);
     assert!(equity(&e, &t.key()) < maint as i64 && equity(&e, &t.key()) > 0);
     let q0 = e.trader(&t.key()).q;
+    // Taker fees from the opening swaps already sit in the insurance fund.
+    let ins_before = e.market().insurance;
+    assert!(ins_before > 0);
     let meta = e.ok(ix::liquidate(&liq.key(), &t.key(), &ops, &[]), &[&liq.kp]);
     let lev: Vec<LiquidationEvent> = decoded(&meta, TAG_LIQUIDATION);
     let fills: Vec<TradeEvent> = decoded(&meta, TAG_TRADE);
@@ -471,7 +477,7 @@ fn scenario_liquidation() {
     assert_eq!(lev[0].size, (q0 - q1) as u64);
     assert_eq!(lev[0].liquidator, liq.key().to_bytes());
     assert!(lev[0].penalty > 0);
-    assert_eq!(e.market().insurance, lev[0].penalty);
+    assert_eq!(e.market().insurance, ins_before + lev[0].penalty);
     let bk = lev[0].bankruptcy_ln.get();
     assert!(fills.iter().all(|f| f.ln_price.get() >= bk - 1));
     assert!(q1 > 0, "curves alone cannot absorb at bankruptcy");
@@ -508,11 +514,14 @@ fn scenario_liquidation() {
 fn scenario_treasury() {
     let (mut e, a, b) = market_with_ops();
     let t = e.funded_trader(10_000 * USDC, 0);
-    e.ok(ix::swap(&t.key(), Side::Long, 4_000 * USDC, 0, no_limit_long(), &[a.key(), b.key()]), &[&t.kp]);
     let admin = e.admin.insecure_clone();
+    // No insurance target: every fee goes to the treasury.
+    e.ok(ix::update_params(&admin.pubkey(), Params { insurance_target_bps: 0, ..Params::DEFAULT }), &[&admin]);
+    e.ok(ix::swap(&t.key(), Side::Long, 4_000 * USDC, 0, no_limit_long(), &[a.key(), b.key()]), &[&t.kp]);
     let au = e.admin_usdc;
     let tre = e.market().treasury;
-    assert_eq!(tre, 2 * USDC);
+    assert_eq!(tre, 4_000 * USDC * Params::DEFAULT.taker_fee_bps as u64 / 10_000);
+    assert_eq!(e.market().insurance, 0);
     let mallory = e.user(0);
     let mut stolen = ix::withdraw_treasury(&mallory.key(), &mallory.usdc, 1);
     stolen.1.accounts[0].pubkey = mallory.key();
